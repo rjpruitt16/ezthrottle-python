@@ -1,247 +1,193 @@
-"""EZThrottle client implementation"""
-
-import json
+"""EZThrottle client implementation via TracktTags proxy"""
 import time
-from typing import Optional, Dict, Any, Callable
-
+import json
+from typing import Optional, Dict, Any
 import requests
-
-from .webhook import WebhookServer
-from .exceptions import EZThrottleError, TimeoutError, AuthenticationError
-
+from .exceptions import EZThrottleError, TimeoutError
 
 class EZThrottle:
-    """EZThrottle client for handling rate-limited API requests"""
-    
     def __init__(
-        self,
+        self, 
         api_key: str,
         tracktags_url: str = "https://tracktags.fly.dev",
-        webhook_port: Optional[int] = None,
-        webhook_callback: Optional[Callable] = None,
-        queue_threshold: int = 30,  # Use EZThrottle for waits > 30s
-        default_timeout: int = 120,  # 2 minutes default
+        ezthrottle_url: str = "https://ezthrottle.fly.dev"
     ):
         """
         Initialize EZThrottle client
         
         Args:
-            api_key: Your TracktTags API key
+            api_key: TracktTags customer API key (ck_live_cust_XXX_YYY)
             tracktags_url: TracktTags proxy URL
-            webhook_port: Port for local webhook server (random if None)
-            webhook_callback: Callback function for webhook results
-            queue_threshold: Minimum retry-after seconds to use EZThrottle
-            default_timeout: Default timeout for queued requests
+            ezthrottle_url: EZThrottle target URL (used internally by proxy)
         """
         self.api_key = api_key
-        self.tracktags_url = tracktags_url.rstrip('/')
-        self.queue_threshold = queue_threshold
-        self.default_timeout = default_timeout
+        self.tracktags_url = tracktags_url
+        self.ezthrottle_url = ezthrottle_url
+    
+    def queue_request(
+        self,
+        url: str,
+        webhook_url: str,
+        method: str = "GET",
+        headers: Optional[Dict[str, str]] = None,
+        body: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None,
+        retry_at: Optional[int] = None,  # ✅ NEW: timestamp in milliseconds
+    ) -> Dict[str, Any]:
+        """
+        Queue a request through TracktTags proxy → EZThrottle
         
-        # Start webhook server if callback provided
-        self.webhook_server = None
-        if webhook_callback:
-            self.webhook_server = WebhookServer(
-                callback=webhook_callback,
-                port=webhook_port
+        Args:
+            url: Target URL to request
+            webhook_url: Where to send the result
+            method: HTTP method (GET, POST, etc)
+            headers: Optional request headers
+            body: Optional request body
+            metadata: Optional metadata
+            retry_at: Optional timestamp (milliseconds) when job can be retried
+                     Use this if you want to control retry timing yourself
+        
+        The proxy will:
+        1. Authenticate your API key
+        2. Check your rate limits
+        3. Inject customer_id securely
+        4. Forward to EZThrottle
+        """
+        
+        # Build the EZThrottle job payload
+        job_payload: Dict[str, Any] = {
+            "url": url,
+            "webhook_url": webhook_url,
+            "method": method.upper(),
+        }
+        
+        if headers:
+            job_payload["headers"] = headers
+        if body:
+            job_payload["body"] = body
+        if metadata:
+            job_payload["metadata"] = metadata
+        if retry_at is not None:
+            job_payload["retry_at"] = retry_at  # ✅ Pass retry_at to EZThrottle
+        
+        # Build proxy request
+        proxy_payload = {
+            "scope": "customer",
+            "metric_name": "",  # Empty = check all plan limits
+            "target_url": f"{self.ezthrottle_url}/api/v1/jobs",
+            "method": "POST",
+            "headers": {
+                "Content-Type": "application/json"
+            },
+            "body": json.dumps(job_payload)
+        }
+        
+        # Call TracktTags proxy (NOT EZThrottle directly)
+        response = requests.post(
+            f"{self.tracktags_url}/api/v1/proxy",  # ✅ Via proxy
+            json=proxy_payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            },
+            timeout=30
+        )
+        
+        # Handle proxy responses
+        if response.status_code == 429:
+            # Rate limited by TracktTags
+            error_data = response.json()
+            
+            # ✅ Extract Retry-After header if present
+            retry_after_seconds = response.headers.get("Retry-After")
+            if retry_after_seconds:
+                retry_after_ms = int(time.time() * 1000) + (int(retry_after_seconds) * 1000)
+                error_data["retry_at"] = retry_after_ms  # Add calculated retry_at
+            
+            raise EZThrottleError(
+                f"Rate limited: {error_data.get('error', 'Unknown error')}",
+                retry_at=error_data.get("retry_at")
             )
-            self.webhook_server.start()
+        
+        if response.status_code != 200:
+            raise EZThrottleError(f"Proxy request failed: {response.text}")
+        
+        # Extract forwarded response from proxy
+        proxy_response = response.json()
+        
+        if proxy_response.get("status") != "allowed":
+            raise EZThrottleError(
+                f"Request denied: {proxy_response.get('error', 'Unknown error')}"
+            )
+        
+        # Get the actual EZThrottle response
+        forwarded = proxy_response.get("forwarded_response", {})
+        
+        if forwarded.get("status_code") != 201:
+            raise EZThrottleError(
+                f"EZThrottle job creation failed: {forwarded.get('body', 'Unknown error')}"
+            )
+        
+        # Parse EZThrottle response
+        ezthrottle_response = json.loads(forwarded.get("body", "{}"))
+        
+        return ezthrottle_response
     
     def request(
         self,
         url: str,
-        method: str = "POST",
+        method: str = "GET",
         headers: Optional[Dict[str, str]] = None,
-        json_data: Optional[Dict[str, Any]] = None,
-        data: Optional[str] = None,
-        timeout: Optional[int] = None,
+        body: Optional[str] = None,
     ) -> requests.Response:
-        """
-        Smart request that handles 429s automatically
+        """Make a direct HTTP request (bypasses both TracktTags and EZThrottle)"""
         
-        Args:
-            url: Target API URL
-            method: HTTP method
-            headers: Request headers
-            json_data: JSON body (will be serialized)
-            data: Raw string body
-            timeout: Timeout in seconds
-            
-        Returns:
-            Response from the API (either direct or via webhook)
-        """
-        # Try direct request first
-        response = self._direct_request(url, method, headers, json_data, data)
+        req_headers = headers or {}
+        req_method = getattr(requests, method.lower())
         
-        if response.status_code != 429:
-            return response
-        
-        # Check Retry-After header
-        retry_after = int(response.headers.get('Retry-After', 60))
-        
-        if retry_after <= self.queue_threshold:
-            # Short wait - just sleep and retry
-            time.sleep(retry_after)
-            return self._direct_request(url, method, headers, json_data, data)
-        
-        # Long wait - use EZThrottle
-        return self.queue_and_wait(
-            url=url,
-            method=method,
-            headers=headers,
-            json_data=json_data,
-            data=data,
-            timeout=timeout or self.default_timeout
+        response = req_method(
+            url,
+            headers=req_headers,
+            data=body,
+            timeout=30
         )
+        
+        return response
     
     def queue_and_wait(
         self,
         url: str,
-        method: str = "POST",
+        webhook_url: str,
+        method: str = "GET",
         headers: Optional[Dict[str, str]] = None,
-        json_data: Optional[Dict[str, Any]] = None,
-        data: Optional[str] = None,
-        timeout: int = 120,
-        webhook_url: Optional[str] = None,
-    ) -> requests.Response:
-        """
-        Queue request through EZThrottle and wait for result
+        body: Optional[str] = None,
+        timeout: int = 300,
+        poll_interval: int = 2,
+        metadata: Optional[Dict[str, str]] = None,
+        retry_at: Optional[int] = None,  # ✅ NEW
+    ) -> Dict[str, Any]:
+        """Queue a request and wait for the webhook response"""
         
-        Args:
-            url: Target API URL
-            method: HTTP method
-            headers: Request headers
-            json_data: JSON body
-            data: Raw string body
-            timeout: Timeout in seconds
-            webhook_url: Custom webhook URL (uses local server if None)
-            
-        Returns:
-            Response from webhook or timeout error
-        """
-        # Determine webhook URL
-        if not webhook_url:
-            if not self.webhook_server:
-                raise EZThrottleError(
-                    "No webhook URL provided and no webhook server running"
-                )
-            webhook_url = self.webhook_server.get_url()
-        
-        # Prepare body
-        body = data
-        if json_data:
-            body = json.dumps(json_data)
-        
-        # Queue the job
-        job_id = self._queue_job(
+        # Queue the request via proxy
+        result = self.queue_request(
             url=url,
             webhook_url=webhook_url,
             method=method,
-            headers=headers or {},
-            body=body
+            headers=headers,
+            body=body,
+            metadata=metadata,
+            retry_at=retry_at,  # ✅ Pass through
         )
         
-        # Wait for webhook with timeout
+        job_id = result.get("job_id")
+        if not job_id:
+            raise EZThrottleError("No job_id in response")
+        
+        # Poll webhook URL for result
         start_time = time.time()
+        while time.time() - start_time < timeout:
+            # User should implement their own webhook polling
+            # This is just a placeholder
+            time.sleep(poll_interval)
         
-        if self.webhook_server:
-            result = self.webhook_server.wait_for_result(job_id, timeout)
-            if result:
-                return self._create_response_from_webhook(result)
-        
-        # Timeout - try direct request one more time
-        if time.time() - start_time >= timeout:
-            response = self._direct_request(url, method, headers, json_data, data)
-            if response.status_code != 429:
-                return response
-            raise TimeoutError(f"Request timed out after {timeout} seconds")
-        
-        raise TimeoutError(f"No webhook received for job {job_id}")
-    
-    def _queue_job(
-        self,
-        url: str,
-        webhook_url: str,
-        method: str,
-        headers: Dict[str, str],
-        body: Optional[str],
-    ) -> str:
-        """Queue job through TracktTags proxy to EZThrottle"""
-        
-        # Extract customer_id from API key (format: "cust_xxxxx_keyxxxxx")
-        customer_id = self.api_key.split('_')[1] if '_' in self.api_key else "unknown"
-        
-        proxy_payload = {
-            "scope": "customer",
-            "customer_id": customer_id,
-            "metric_name": "ezthrottle_requests",
-            "target_url": "https://ezthrottle.fly.dev/api/v1/jobs",
-            "method": "POST",
-            "headers": {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}"
-            },
-            "body": json.dumps({
-                "url": url,
-                "webhook_url": webhook_url,
-                "customer_id": customer_id,
-                "method": method,
-                "headers": headers,
-                "body": body
-            })
-        }
-        
-        response = requests.post(
-            f"{self.tracktags_url}/api/v1/proxy",
-            json=proxy_payload,
-            headers={"Authorization": f"Bearer {self.api_key}"}
-        )
-        
-        if response.status_code == 401:
-            raise AuthenticationError("Invalid API key")
-        
-        if response.status_code == 429:
-            # TracktTags is rate limiting us (quota exceeded)
-            raise EZThrottleError("Request quota exceeded")
-        
-        if response.status_code != 200:
-            raise EZThrottleError(f"Failed to queue job: {response.text}")
-        
-        # Extract job_id from response
-        result = response.json()
-        return result.get("job_id", "unknown")
-    
-    def _direct_request(
-        self,
-        url: str,
-        method: str,
-        headers: Optional[Dict[str, str]],
-        json_data: Optional[Dict[str, Any]],
-        data: Optional[str],
-    ) -> requests.Response:
-        """Make direct request to target API"""
-        kwargs = {
-            "method": method,
-            "url": url,
-            "headers": headers or {}
-        }
-        
-        if json_data:
-            kwargs["json"] = json_data
-        elif data:
-            kwargs["data"] = data
-        
-        return requests.request(**kwargs)
-    
-    def _create_response_from_webhook(self, webhook_data: Dict) -> requests.Response:
-        """Create a Response object from webhook data"""
-        response = requests.Response()
-        response.status_code = webhook_data.get("status", 200)
-        response._content = webhook_data.get("response", "").encode('utf-8')
-        response.headers = webhook_data.get("headers", {})
-        return response
-    
-    def close(self):
-        """Shutdown webhook server if running"""
-        if self.webhook_server:
-            self.webhook_server.stop()
+        raise TimeoutError(f"Timeout waiting for job {job_id}")

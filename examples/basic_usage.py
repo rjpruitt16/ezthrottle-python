@@ -1,47 +1,23 @@
-"""Basic usage example for EZThrottle SDK"""
+import time
+from ezthrottle import EZThrottle, EZThrottleError
 
-from ezthrottle import EZThrottle
+client = EZThrottle(api_key="your_key")
 
-
-def handle_webhook(job_id: str, result: dict):
-    """Callback for webhook results"""
-    print(f"Received result for job {job_id}")
-    print(f"Status: {result.get('status')}")
-
-
-def main():
-    # Initialize client
-    client = EZThrottle(
-        api_key="test_key_123",  # You'll need a real key when deployed
-        tracktags_url="http://localhost:8080",  # For local testing
-        webhook_callback=handle_webhook,
-        webhook_port=5555
+try:
+    response = client.queue_request(
+        url="https://api.example.com/data",
+        webhook_url="https://your-webhook.com"
     )
-    
-    print("EZThrottle SDK initialized successfully!")
-    print(f"Webhook server running at: http://localhost:5555/webhook")
-    
-    # Test with a real API that might return 429
-    # For now, let's just show the SDK works
-    try:
-        # Example: Test with httpbin.org (always available)
-        response = client.request(
-            url="https://httpbin.org/status/200",
-            method="GET"
+except EZThrottleError as e:
+    if e.retry_at:
+        # Wait until retry_at before retrying
+        wait_ms = e.retry_at - int(time.time() * 1000)
+        print(f"Rate limited, retry in {wait_ms}ms")
+        
+        # Retry with the suggested timestamp
+        time.sleep(wait_ms / 1000)
+        response = client.queue_request(
+            url="https://api.example.com/data",
+            webhook_url="https://your-webhook.com",
+            retry_at=e.retry_at  # ✅ Tell EZThrottle when to retry
         )
-        print(f"Direct request worked: {response.status_code}")
-        
-        # Force test the queue path (even though httpbin won't 429)
-        print("\nTesting queue_and_wait (this will timeout since httpbin won't webhook back)...")
-        # This would normally be used when you get a 429
-        
-    except Exception as e:
-        print(f"Error: {e}")
-    
-    finally:
-        client.close()
-        print("\nSDK test complete!")
-
-
-if __name__ == "__main__":
-    main()
