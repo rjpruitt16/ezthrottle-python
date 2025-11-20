@@ -1,7 +1,7 @@
 """EZThrottle client implementation via TracktTags proxy"""
 import time
 import json
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import requests
 from .exceptions import EZThrottleError, TimeoutError
 
@@ -24,29 +24,50 @@ class EZThrottle:
         self.tracktags_url = tracktags_url
         self.ezthrottle_url = ezthrottle_url
     
-    def queue_request(
+    def submit_job(
         self,
         url: str,
-        webhook_url: str,
         method: str = "GET",
         headers: Optional[Dict[str, str]] = None,
         body: Optional[str] = None,
         metadata: Optional[Dict[str, str]] = None,
-        retry_at: Optional[int] = None,  # ✅ NEW: timestamp in milliseconds
+        webhooks: Optional[List[Dict[str, Any]]] = None,
+        webhook_quorum: int = 1,
+        regions: Optional[List[str]] = None,
+        region_policy: str = "fallback",
+        execution_mode: str = "race",
+        retry_policy: Optional[Dict[str, Any]] = None,
+        fallback_job: Optional[Dict[str, Any]] = None,
+        on_success: Optional[Dict[str, Any]] = None,
+        on_failure: Optional[Dict[str, Any]] = None,
+        on_failure_timeout_ms: Optional[int] = None,
+        idempotent_key: Optional[str] = None,
+        retry_at: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Queue a request through TracktTags proxy → EZThrottle
-        
+        Submit a job through TracktTags proxy → EZThrottle
+
         Args:
             url: Target URL to request
-            webhook_url: Where to send the result
             method: HTTP method (GET, POST, etc)
             headers: Optional request headers
             body: Optional request body
             metadata: Optional metadata
+            webhooks: Array of webhook configurations:
+                     [{"url": "https://app.com/webhook", "regions": ["iad"], "has_quorum_vote": True}]
+            webhook_quorum: Minimum webhooks with has_quorum_vote=true that must succeed (default: 1)
+            regions: Regions to execute job in (e.g., ["iad", "lax", "ord"])
+            region_policy: "fallback" (auto-route if region down) or "strict" (fail if region down)
+            execution_mode: "race" (first completion wins) or "fanout" (all execute)
+            retry_policy: Retry configuration:
+                         {"max_retries": 3, "max_reroutes": 2, "retry_codes": [429, 503], "reroute_codes": [500, 502]}
+            fallback_job: Recursive fallback configuration (see docs for structure)
+            on_success: Job to spawn on successful completion
+            on_failure: Job to spawn when all execution paths fail
+            on_failure_timeout_ms: Timeout before triggering on_failure workflow (milliseconds)
+            idempotent_key: Deduplication key (auto-generated if not provided)
             retry_at: Optional timestamp (milliseconds) when job can be retried
-                     Use this if you want to control retry timing yourself
-        
+
         The proxy will:
         1. Authenticate your API key
         2. Check your rate limits
@@ -57,18 +78,40 @@ class EZThrottle:
         # Build the EZThrottle job payload
         job_payload: Dict[str, Any] = {
             "url": url,
-            "webhook_url": webhook_url,
             "method": method.upper(),
         }
-        
+
+        # Add optional parameters
         if headers:
             job_payload["headers"] = headers
         if body:
             job_payload["body"] = body
         if metadata:
             job_payload["metadata"] = metadata
+        if webhooks:
+            job_payload["webhooks"] = webhooks
+        if webhook_quorum != 1:  # Only include if non-default
+            job_payload["webhook_quorum"] = webhook_quorum
+        if regions:
+            job_payload["regions"] = regions
+        if region_policy != "fallback":  # Only include if non-default
+            job_payload["region_policy"] = region_policy
+        if execution_mode != "race":  # Only include if non-default
+            job_payload["execution_mode"] = execution_mode
+        if retry_policy:
+            job_payload["retry_policy"] = retry_policy
+        if fallback_job:
+            job_payload["fallback_job"] = fallback_job
+        if on_success:
+            job_payload["on_success"] = on_success
+        if on_failure:
+            job_payload["on_failure"] = on_failure
+        if on_failure_timeout_ms is not None:
+            job_payload["on_failure_timeout_ms"] = on_failure_timeout_ms
+        if idempotent_key:
+            job_payload["idempotent_key"] = idempotent_key
         if retry_at is not None:
-            job_payload["retry_at"] = retry_at  # ✅ Pass retry_at to EZThrottle
+            job_payload["retry_at"] = retry_at
         
         # Build proxy request
         proxy_payload = {
@@ -122,8 +165,9 @@ class EZThrottle:
         
         # Get the actual EZThrottle response
         forwarded = proxy_response.get("forwarded_response", {})
-        
-        if forwarded.get("status_code") != 201:
+
+        status_code = forwarded.get("status_code")
+        if status_code < 200 or status_code >= 300:
             raise EZThrottleError(
                 f"EZThrottle job creation failed: {forwarded.get('body', 'Unknown error')}"
             )
@@ -154,6 +198,33 @@ class EZThrottle:
         
         return response
     
+    def queue_request(
+        self,
+        url: str,
+        webhook_url: str,
+        method: str = "GET",
+        headers: Optional[Dict[str, str]] = None,
+        body: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None,
+        retry_at: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        DEPRECATED: Use submit_job() instead.
+        Legacy method for backward compatibility.
+        """
+        # Convert singular webhook_url to webhooks array
+        webhooks = [{"url": webhook_url, "has_quorum_vote": True}] if webhook_url else None
+
+        return self.submit_job(
+            url=url,
+            method=method,
+            headers=headers,
+            body=body,
+            metadata=metadata,
+            webhooks=webhooks,
+            retry_at=retry_at,
+        )
+
     def queue_and_wait(
         self,
         url: str,
@@ -164,11 +235,11 @@ class EZThrottle:
         timeout: int = 300,
         poll_interval: int = 2,
         metadata: Optional[Dict[str, str]] = None,
-        retry_at: Optional[int] = None,  # ✅ NEW
+        retry_at: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Queue a request and wait for the webhook response"""
-        
-        # Queue the request via proxy
+
+        # Queue the request via proxy (uses legacy method for backward compat)
         result = self.queue_request(
             url=url,
             webhook_url=webhook_url,
@@ -176,7 +247,7 @@ class EZThrottle:
             headers=headers,
             body=body,
             metadata=metadata,
-            retry_at=retry_at,  # ✅ Pass through
+            retry_at=retry_at,
         )
         
         job_id = result.get("job_id")
