@@ -7,22 +7,35 @@ from .exceptions import EZThrottleError, TimeoutError
 
 class EZThrottle:
     def __init__(
-        self, 
+        self,
         api_key: str,
         tracktags_url: str = "https://tracktags.fly.dev",
-        ezthrottle_url: str = "https://ezthrottle.fly.dev"
+        ezthrottle_url: str = "https://ezthrottle.fly.dev",
+        webhook_server=None,
+        start_webhook_server: bool = False,
+        webhook_port: int = 5000
     ):
         """
         Initialize EZThrottle client
-        
+
         Args:
             api_key: TracktTags customer API key (ck_live_cust_XXX_YYY)
             tracktags_url: TracktTags proxy URL
             ezthrottle_url: EZThrottle target URL (used internally by proxy)
+            webhook_server: Optional WebhookServer instance
+            start_webhook_server: Auto-start webhook server for workflow orchestration
+            webhook_port: Port for webhook server (default: 5000)
         """
         self.api_key = api_key
         self.tracktags_url = tracktags_url
         self.ezthrottle_url = ezthrottle_url
+        self.webhook_server = webhook_server
+
+        # Auto-start webhook server if requested
+        if start_webhook_server and not self.webhook_server:
+            from .webhook import create_webhook_server
+            self.webhook_server = create_webhook_server(port=webhook_port, backend="auto")
+            self.webhook_server.start()
     
     def submit_job(
         self,

@@ -286,6 +286,56 @@ class Step:
             timeout=self._local_timeout
         )
 
+    def _try_local_fallbacks(self, client, error_code: Optional[int]) -> Optional[Dict[str, Any]]:
+        """
+        Try all fallback steps locally
+
+        Args:
+            client: EZThrottle client
+            error_code: Error code from primary step (None for network errors)
+
+        Returns:
+            Success result if any fallback succeeds, None if all fail
+        """
+        for fallback_step, trigger_config in self._fallback_steps:
+            # Check if this fallback should be triggered
+            should_trigger = False
+
+            if trigger_config:
+                trigger_type = trigger_config.get("type")
+                if trigger_type == "on_error":
+                    trigger_codes = trigger_config.get("codes", [])
+                    if error_code and error_code in trigger_codes:
+                        should_trigger = True
+                elif trigger_type == "on_timeout":
+                    # For timeout trigger, always try (we don't implement timeout tracking locally)
+                    should_trigger = True
+            else:
+                # No trigger specified, always try
+                should_trigger = True
+
+            if not should_trigger:
+                continue
+
+            # Try this fallback locally
+            try:
+                # Only execute fallback if it's FRUGAL type
+                if fallback_step._step_type == StepType.FRUGAL:
+                    result = fallback_step.execute(client)
+                    # If fallback succeeded, return immediately
+                    if result.get("status") == "success":
+                        return result
+                else:
+                    # PERFORMANCE fallback - can't execute locally, skip
+                    continue
+
+            except Exception as e:
+                # Fallback failed, try next one
+                continue
+
+        # All fallbacks failed
+        return None
+
     def execute(self, client=None) -> Dict[str, Any]:
         """
         Execute the step workflow
@@ -304,14 +354,17 @@ class Step:
             return self._execute_performance(client)
 
     def _execute_frugal(self, client) -> Dict[str, Any]:
-        """Execute FRUGAL workflow (local first, queue on error)"""
+        """Execute FRUGAL workflow (local first, try fallbacks, then queue on error)"""
+        # Try primary step locally
         try:
-            # Try local execution
             response = self._execute_local()
 
-            # Success! Return immediately
+            # Success! Execute on_success and return
             if 200 <= response.status_code < 300:
-                # TODO: Fire on_success workflow asynchronously
+                # Execute on_success workflow if present
+                if self._on_success_step:
+                    self._on_success_step.execute(client)
+
                 return {
                     "status": "success",
                     "executed_locally": True,
@@ -319,24 +372,83 @@ class Step:
                     "response": response.text
                 }
 
-            # Error code matches fallback trigger?
+            # Error - try fallback chain locally
             if response.status_code in self._fallback_on_error:
-                # Forward to EZThrottle
+                fallback_result = self._try_local_fallbacks(client, response.status_code)
+                if fallback_result:
+                    return fallback_result
+
+                # All fallbacks failed → forward to EZThrottle
                 return self._forward_to_ezthrottle(client)
 
-            # Unhandled error
-            raise EZThrottleError(f"Request failed: {response.status_code}")
+            # Non-trigger error - don't forward, just return error
+            return {
+                "status": "failed",
+                "executed_locally": True,
+                "status_code": response.status_code,
+                "error": f"Request failed: {response.status_code}"
+            }
 
-        except (requests.Timeout, requests.RequestException):
-            # Timeout or network error → forward to EZThrottle
+        except (requests.Timeout, requests.RequestException) as e:
+            # Network error → try fallbacks, then forward to EZThrottle
+            fallback_result = self._try_local_fallbacks(client, None)
+            if fallback_result:
+                return fallback_result
+
             return self._forward_to_ezthrottle(client)
 
     def _forward_to_ezthrottle(self, client) -> Dict[str, Any]:
-        """Forward job to EZThrottle with fallback chain"""
+        """Forward job to EZThrottle with fallback chain and register workflow continuation"""
         payload = self._build_job_payload()
-        return client.submit_job(**payload)
+
+        # If client has webhook server and we have workflows, add webhook and register
+        if client.webhook_server and (self._on_success_step or self._on_failure_step):
+            webhook_url = client.webhook_server.get_url()
+
+            # Add webhook to payload if not already present
+            if not payload.get("webhooks"):
+                payload["webhooks"] = []
+            payload["webhooks"].append({"url": webhook_url, "has_quorum_vote": True})
+
+        # Submit job
+        result = client.submit_job(**payload)
+        job_id = result.get("job_id")
+
+        # Register workflow continuation
+        if client.webhook_server and job_id and (self._on_success_step or self._on_failure_step):
+            client.webhook_server.register_workflow(
+                job_id=job_id,
+                on_success=self._on_success_step,
+                on_failure=self._on_failure_step,
+                client=client
+            )
+
+        return result
 
     def _execute_performance(self, client) -> Dict[str, Any]:
         """Execute PERFORMANCE workflow (submit to EZThrottle immediately)"""
         payload = self._build_job_payload()
-        return client.submit_job(**payload)
+
+        # If client has webhook server and we have workflows, add webhook and register
+        if client.webhook_server and (self._on_success_step or self._on_failure_step):
+            webhook_url = client.webhook_server.get_url()
+
+            # Add webhook to payload if not already present
+            if not payload.get("webhooks"):
+                payload["webhooks"] = []
+            payload["webhooks"].append({"url": webhook_url, "has_quorum_vote": True})
+
+        # Submit job
+        result = client.submit_job(**payload)
+        job_id = result.get("job_id")
+
+        # Register workflow continuation
+        if client.webhook_server and job_id and (self._on_success_step or self._on_failure_step):
+            client.webhook_server.register_workflow(
+                job_id=job_id,
+                on_success=self._on_success_step,
+                on_failure=self._on_failure_step,
+                client=client
+            )
+
+        return result
