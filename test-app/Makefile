@@ -18,11 +18,11 @@ help:
 
 secrets:
 	@echo "🔒 Setting Fly secrets..."
-	@if [ ! -f .env.test ]; then \
-		echo "❌ Error: .env.test not found!"; \
-		exit 1; \
+	@if [ -f .env.test ]; then \
+		bash .env.test; \
+	else \
+		echo "⚠️  No .env.test file, assuming secrets already set"; \
 	fi
-	@bash .env.test
 	@echo "✅ Secrets set"
 
 # ONE COMMAND: Deploy → Test → Teardown (only if tests pass)
