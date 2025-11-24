@@ -40,12 +40,20 @@ integration:
 	@$(MAKE) test || (echo "❌ Tests failed! App left running for debugging: $(APP_URL)" && exit 1)
 	@echo ""
 
-	@# Step 3: Teardown removed - keep app running for next CI run (free when idle)
-	@echo "✅ Integration tests complete! App running at: $(APP_URL)"
+	@# Step 3: Scale to zero (keeps app but costs nothing)
+	@echo "🔻 Scaling app to zero..."
+	@$(MAKE) teardown
+	@echo "✅ Integration tests complete! App scaled to zero (no cost)"
 
 deploy:
+	@echo "   Listing Fly organizations..."
+	@fly orgs list || echo "⚠️  Could not list orgs"
+
+	@echo "   Listing Fly apps..."
+	@fly apps list || echo "⚠️  Could not list apps"
+
 	@echo "   Creating Fly app (if needed)..."
-	@fly apps create $(APP_NAME) --org ezthrottle 2>/dev/null || true
+	@fly apps create $(APP_NAME) --org ezthrottle 2>&1 || echo "⚠️  App create failed (might already exist)"
 
 	@echo "   Setting secrets..."
 	@$(MAKE) secrets
@@ -72,8 +80,8 @@ test:
 	@echo "✅ All tests passed"
 
 teardown:
-	@fly apps destroy $(APP_NAME) --yes 2>/dev/null || true
-	@echo "✅ Teardown complete"
+	@fly scale count 0 --app $(APP_NAME) --yes 2>&1 || echo "⚠️  Scale to zero failed (app might not exist)"
+	@echo "✅ App scaled to zero (costs nothing when idle)"
 
 clean:
 	@curl -X POST $(APP_URL)/webhooks/reset
