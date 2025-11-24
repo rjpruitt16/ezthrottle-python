@@ -236,6 +236,148 @@ Step(client)
     .execute()
 ```
 
+## Webhook Payload
+
+When EZThrottle completes your job, it sends a POST request to your webhook URL with the following JSON payload:
+
+```json
+{
+  "job_id": "job_1763674210055_853341",
+  "idempotent_key": "custom_key_or_generated_hash",
+  "status": "success",
+  "response": {
+    "status_code": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"result\": \"data\"}"
+  },
+  "metadata": {}
+}
+```
+
+**Fields:**
+- `job_id` - Unique identifier for this job
+- `idempotent_key` - Your custom key or auto-generated hash
+- `status` - `"success"` or `"failed"`
+- `response.status_code` - HTTP status code from the target API
+- `response.headers` - Response headers from the target API
+- `response.body` - Response body from the target API (as string)
+- `metadata` - Custom metadata you provided during job submission
+
+**Example webhook handler (Flask):**
+```python
+from flask import Flask, request
+
+app = Flask(__name__)
+
+@app.route('/webhook', methods=['POST'])
+def handle_webhook():
+    payload = request.json
+
+    job_id = payload['job_id']
+    status = payload['status']
+
+    if status == 'success':
+        response_body = payload['response']['body']
+        # Process successful result
+        print(f"Job {job_id} succeeded: {response_body}")
+    else:
+        # Handle failure
+        print(f"Job {job_id} failed")
+
+    return {'ok': True}
+```
+
+## Mixed Workflow Chains (FRUGAL ↔ PERFORMANCE)
+
+Mix FRUGAL and PERFORMANCE steps in the same workflow to optimize for both cost and speed:
+
+### Example 1: FRUGAL → PERFORMANCE (Save money, then fast delivery)
+
+```python
+# Primary API call is cheap (local execution)
+# But notification needs speed (multi-region racing)
+result = (
+    Step(client)
+    .url("https://api.openai.com/v1/chat/completions")
+    .type(StepType.FRUGAL)  # Execute locally first
+    .fallback_on_error([429, 500])
+    .on_success(
+        # Chain to PERFORMANCE for fast webhook delivery
+        Step(client)
+        .url("https://api.sendgrid.com/send")
+        .type(StepType.PERFORMANCE)  # Distributed execution
+        .webhooks([{"url": "https://app.com/email-sent"}])
+        .regions(["iad", "lax", "ord"])
+    )
+    .execute()
+)
+```
+
+### Example 2: PERFORMANCE → FRUGAL (Fast payment, then cheap analytics)
+
+```python
+# Critical payment needs speed (racing)
+# But analytics is cheap (local execution when webhook arrives)
+payment = (
+    Step(client)
+    .url("https://api.stripe.com/charges")
+    .type(StepType.PERFORMANCE)  # Fast distributed execution
+    .webhooks([{"url": "https://app.com/payment-complete"}])
+    .regions(["iad", "lax"])
+    .on_success(
+        # Analytics doesn't need speed - save money!
+        Step(client)
+        .url("https://analytics.com/track")
+        .type(StepType.FRUGAL)  # Client executes when webhook arrives
+    )
+    .execute()
+)
+```
+
+### Example 3: Complex Mixed Workflow
+
+```python
+# Optimize every step for its requirements
+workflow = (
+    Step(client)
+    .url("https://cheap-api.com")
+    .type(StepType.FRUGAL)  # Try locally first
+    .fallback_on_error([429, 500])
+    .fallback(
+        Step().url("https://backup-api.com"),  # Still FRUGAL
+        trigger_on_error=[500]
+    )
+    .on_success(
+        # Critical notification needs PERFORMANCE
+        Step(client)
+        .url("https://critical-webhook.com")
+        .type(StepType.PERFORMANCE)
+        .webhooks([{"url": "https://app.com/webhook"}])
+        .regions(["iad", "lax", "ord"])
+        .on_success(
+            # Analytics is cheap again
+            Step(client)
+            .url("https://analytics.com/track")
+            .type(StepType.FRUGAL)
+        )
+    )
+    .on_failure(
+        # Simple Slack alert doesn't need PERFORMANCE
+        Step(client)
+        .url("https://hooks.slack.com/webhook")
+        .type(StepType.FRUGAL)
+    )
+    .execute()
+)
+```
+
+**Why mix workflows?**
+- ✅ **Cost optimization** - Only pay for what needs speed
+- ✅ **Performance where it matters** - Critical paths get multi-region racing
+- ✅ **Flexibility** - Every step optimized for its specific requirements
+
 ## @auto_forward Decorator (Legacy Code Integration)
 
 **The killer feature:** Integrate EZThrottle into existing code without rewriting error handling!
@@ -354,6 +496,274 @@ def legacy_api_call():
 - ✅ GitHub Actions runs these examples against live backend on every push
 - ✅ 7 integration tests covering all SDK features
 - ✅ Proves the code actually works, not just documentation
+
+## Asyncio Streaming (Non-Blocking Webhook Waiting)
+
+Wait for webhook results asynchronously using Python's asyncio. Perfect for workflows that need to continue processing while waiting for EZThrottle to complete jobs.
+
+### Basic Asyncio Example
+
+```python
+import asyncio
+from ezthrottle import EZThrottle, Step, StepType
+
+client = EZThrottle(api_key="your_api_key")
+
+async def process_with_webhook():
+    # Submit job to EZThrottle
+    result = (
+        Step(client)
+        .url("https://api.example.com/endpoint")
+        .method("POST")
+        .type(StepType.PERFORMANCE)
+        .webhooks([{"url": "https://app.com/webhook", "has_quorum_vote": True}])
+        .idempotent_key("async_job_123")
+        .execute()
+    )
+
+    print(f"Job submitted: {result['job_id']}")
+
+    # Continue processing while EZThrottle executes the job
+    # Your webhook endpoint will receive the result asynchronously
+
+# Run async function
+asyncio.run(process_with_webhook())
+```
+
+### Concurrent Job Submission with asyncio.gather
+
+Submit multiple jobs concurrently and process results as they arrive:
+
+```python
+import asyncio
+from ezthrottle import EZThrottle, Step, StepType
+
+client = EZThrottle(api_key="your_api_key")
+
+async def submit_job(order):
+    """Submit a single job asynchronously"""
+    result = (
+        Step(client)
+        .url("https://api.example.com/process")
+        .method("POST")
+        .body(str(order))
+        .type(StepType.PERFORMANCE)
+        .webhooks([{"url": "https://app.com/webhook", "has_quorum_vote": True}])
+        .idempotent_key(f"order_{order['id']}")
+        .execute()
+    )
+
+    return {
+        "order_id": order["id"],
+        "job_id": result["job_id"],
+        "idempotent_key": result.get("idempotent_key")
+    }
+
+async def process_batch_concurrently(orders):
+    # Submit all jobs concurrently
+    tasks = [submit_job(order) for order in orders]
+    submissions = await asyncio.gather(*tasks)
+
+    print(f"Submitted {len(submissions)} jobs concurrently")
+    for s in submissions:
+        print(f"Order {s['order_id']} → Job {s['job_id']}")
+
+    # Webhook results will arrive asynchronously at https://app.com/webhook
+    return submissions
+
+# Example usage
+orders = [
+    {"id": "order_1", "amount": 1000},
+    {"id": "order_2", "amount": 2000},
+    {"id": "order_3", "amount": 3000}
+]
+
+asyncio.run(process_batch_concurrently(orders))
+```
+
+### Fault-Tolerant Batch Processing
+
+Handle failures gracefully with asyncio exception handling:
+
+```python
+import asyncio
+from ezthrottle import EZThrottle, Step, StepType
+
+client = EZThrottle(api_key="your_api_key")
+
+async def submit_job_with_error_handling(order):
+    """Submit job with exception handling"""
+    try:
+        result = (
+            Step(client)
+            .url("https://api.example.com/process")
+            .method("POST")
+            .body(str(order))
+            .type(StepType.PERFORMANCE)
+            .webhooks([{"url": "https://app.com/webhook"}])
+            .idempotent_key(f"order_{order['id']}")
+            .execute()
+        )
+        return {"order_id": order["id"], "job_id": result["job_id"], "success": True}
+    except Exception as e:
+        return {"order_id": order["id"], "error": str(e), "success": False}
+
+async def process_batch_with_error_handling(orders):
+    tasks = [submit_job_with_error_handling(order) for order in orders]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    succeeded = [r for r in results if isinstance(r, dict) and r.get("success")]
+    failed = [r for r in results if isinstance(r, dict) and not r.get("success")] + \
+             [r for r in results if isinstance(r, Exception)]
+
+    print(f"Succeeded: {len(succeeded)}, Failed: {len(failed)}")
+
+    return {"succeeded": succeeded, "failed": failed}
+
+# Example usage
+orders = [
+    {"id": "order_1", "amount": 1000},
+    {"id": "order_2", "amount": 2000},
+    {"id": "order_3", "amount": 3000}
+]
+
+asyncio.run(process_batch_with_error_handling(orders))
+```
+
+### Integration with FastAPI Webhook Handler
+
+```python
+from fastapi import FastAPI, Request
+from ezthrottle import EZThrottle, Step, StepType
+import asyncio
+
+app = FastAPI()
+client = EZThrottle(api_key="your_api_key")
+
+# In-memory store for webhook results (use Redis/DB in production)
+webhook_results = {}
+
+@app.post("/webhook")
+async def webhook_receiver(request: Request):
+    """Receive webhooks from EZThrottle"""
+    data = await request.json()
+
+    job_id = data.get("job_id")
+    idempotent_key = data.get("idempotent_key")
+    status = data.get("status")
+    response = data.get("response")
+
+    # Store result
+    webhook_results[idempotent_key] = {
+        "job_id": job_id,
+        "status": status,
+        "response": response,
+        "received_at": datetime.now()
+    }
+
+    print(f"Webhook received for {idempotent_key}: {status}")
+
+    return {"ok": True}
+
+@app.post("/submit")
+async def submit_job():
+    """Submit job and return immediately"""
+    idempotent_key = f"job_{int(time.time() * 1000)}"
+
+    result = (
+        Step(client)
+        .url("https://api.example.com/endpoint")
+        .method("POST")
+        .type(StepType.PERFORMANCE)
+        .webhooks([{"url": "https://app.com/webhook", "has_quorum_vote": True}])
+        .idempotent_key(idempotent_key)
+        .execute()
+    )
+
+    # Return immediately, don't wait for webhook
+    return {
+        "job_id": result["job_id"],
+        "idempotent_key": idempotent_key,
+        "message": "Job submitted, webhook will arrive asynchronously"
+    }
+
+@app.get("/result/{idempotent_key}")
+async def get_result(idempotent_key: str):
+    """Poll for webhook result"""
+    result = webhook_results.get(idempotent_key)
+
+    if result:
+        return {"found": True, "result": result}
+    else:
+        return {"found": False, "message": "Webhook not yet received"}
+```
+
+### Background Task Processing with asyncio
+
+Process multiple jobs in the background while serving requests:
+
+```python
+import asyncio
+from ezthrottle import EZThrottle, Step, StepType
+
+client = EZThrottle(api_key="your_api_key")
+
+async def background_job_processor(queue):
+    """Process jobs from a queue in the background"""
+    while True:
+        if queue.empty():
+            await asyncio.sleep(1)
+            continue
+
+        order = await queue.get()
+
+        try:
+            result = (
+                Step(client)
+                .url("https://api.example.com/process")
+                .method("POST")
+                .body(str(order))
+                .type(StepType.PERFORMANCE)
+                .webhooks([{"url": "https://app.com/webhook"}])
+                .idempotent_key(f"order_{order['id']}")
+                .execute()
+            )
+            print(f"Submitted job {result['job_id']} for order {order['id']}")
+        except Exception as e:
+            print(f"Failed to submit order {order['id']}: {e}")
+        finally:
+            queue.task_done()
+
+async def main():
+    queue = asyncio.Queue()
+
+    # Start background processor
+    processor = asyncio.create_task(background_job_processor(queue))
+
+    # Add jobs to queue
+    orders = [
+        {"id": "order_1", "amount": 1000},
+        {"id": "order_2", "amount": 2000},
+        {"id": "order_3", "amount": 3000}
+    ]
+
+    for order in orders:
+        await queue.put(order)
+
+    # Wait for all jobs to be processed
+    await queue.join()
+
+    # Cancel background processor
+    processor.cancel()
+    try:
+        await processor
+    except asyncio.CancelledError:
+        pass
+
+    print("All jobs processed!")
+
+asyncio.run(main())
+```
 
 ## Legacy API (Deprecated)
 
