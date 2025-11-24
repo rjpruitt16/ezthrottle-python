@@ -293,45 +293,67 @@ result = process_payment("order_12345")
 
 ## Production Ready ✅
 
-This SDK is production-ready with comprehensive integration tests running on every push.
+This SDK is production-ready with **working examples validated in CI on every push**.
 
-### Integration Test Suite
+### Reference Implementation: test-app/
 
-The `test-app/` directory contains a **full integration test suite** deployed to Fly.io that validates:
-- Multi-region racing with fallback
-- Webhook delivery and polling
-- Idempotent key strategies (HASH vs UNIQUE)
-- Fallback chains (OnError, OnTimeout)
-- On-success/on-failure workflows
-- Auto-forward decorator
+The `test-app/` directory contains **real, working code** you can learn from. Not toy examples - this is production code we run in automated tests against live EZThrottle backend.
 
-**Run tests locally:**
-```bash
-cd test-app
-make integration
+**Multi-Region Racing** ([test-app/app.py:134-145](test-app/app.py#L134-L145))
+```python
+Step(client)
+    .url("https://httpbin.org/delay/1")
+    .type(StepType.PERFORMANCE)
+    .webhooks([{"url": f"{APP_URL}/webhook"}])
+    .regions(["iad", "lax", "ord"])  # Race across 3 regions
+    .execution_mode("race")  # First completion wins
+    .execute()
 ```
 
-**Test flow:**
-1. Deploys FastAPI test app to Fly.io
-2. Runs 7 Hurl integration tests
-3. Validates webhook delivery
-4. Tears down deployment
+**Idempotent HASH (Deduplication)** ([test-app/app.py:274-281](test-app/app.py#L274-L281))
+```python
+# Same request twice = same job_id (deduplicated)
+Step(client)
+    .url(f"https://httpbin.org/get?run={run_id}")
+    .idempotent_strategy(IdempotentStrategy.HASH)
+    .execute()
+```
 
-**CI/CD:**
-- ✅ GitHub Actions runs full integration suite on every push
-- ✅ Tests against live EZThrottle backend
-- ✅ 100% test coverage of SDK features
+**Fallback Chain** ([test-app/app.py:168-182](test-app/app.py#L168-L182))
+```python
+Step(client)
+    .url("https://httpbin.org/status/500")
+    .fallback(
+        Step().url("https://httpbin.org/status/200"),
+        trigger_on_error=[500, 502, 503]
+    )
+    .execute()
+```
 
-### Test App as Reference Implementation
+**On-Success Workflow** ([test-app/app.py:198-213](test-app/app.py#L198-L213))
+```python
+Step(client)
+    .url("https://httpbin.org/status/200")
+    .on_success(
+        Step().url("https://httpbin.org/delay/1")
+    )
+    .execute()
+```
 
-See `test-app/app.py` for **production-ready examples** of:
-- Performance vs Frugal workflows
-- Multi-region racing
-- Idempotent key strategies
-- Webhook handling
-- Auto-forward decorator
+**Auto-Forward Decorator** ([test-app/app.py:246-256](test-app/app.py#L246-L256))
+```python
+@auto_forward(client, fallback_on_error=[429, 500])
+def legacy_api_call():
+    response = requests.get("https://httpbin.org/status/429")
+    response.raise_for_status()  # Raises on 429
+    return response.json()
+# Automatically forwards to EZThrottle on error!
+```
 
-**This is the same code we use to validate production deployments!**
+**Validated in CI:**
+- ✅ GitHub Actions runs these examples against live backend on every push
+- ✅ 7 integration tests covering all SDK features
+- ✅ Proves the code actually works, not just documentation
 
 ## Legacy API (Deprecated)
 
