@@ -19,11 +19,11 @@ help:
 secrets:
 	@echo "🔒 Setting Fly secrets..."
 	@if [ -f .env.test ]; then \
-		bash .env.test; \
+		fly secrets set --app $(APP_NAME) $$(grep -v '^#' .env.test | grep -v '^$$' | xargs) 2>/dev/null || echo "⚠️  Could not set secrets (app may not exist yet)"; \
 	else \
 		echo "⚠️  No .env.test file, assuming secrets already set"; \
 	fi
-	@echo "✅ Secrets set"
+	@echo "✅ Secrets set (or skipped)"
 
 # ONE COMMAND: Deploy → Test → Teardown (only if tests pass)
 integration:
