@@ -40,11 +40,8 @@ integration:
 	@$(MAKE) test || (echo "❌ Tests failed! App left running for debugging: $(APP_URL)" && exit 1)
 	@echo ""
 
-	@# Step 3: Teardown (only runs if tests passed)
-	@echo "🗑️  STEP 3/3: Tests passed! Tearing down..."
-	@$(MAKE) teardown
-	@echo ""
-	@echo "✅ Integration cycle complete!"
+	@# Step 3: Teardown removed - keep app running for next CI run (free when idle)
+	@echo "✅ Integration tests complete! App running at: $(APP_URL)"
 
 deploy:
 	@echo "   Creating Fly app (if needed)..."
