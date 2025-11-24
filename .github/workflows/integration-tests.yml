@@ -33,6 +33,10 @@ jobs:
     - name: Install Fly CLI
       uses: superfly/flyctl-actions/setup-flyctl@master
 
+    - name: Create fly symlink
+      run: |
+        sudo ln -sf $(which flyctl) /usr/local/bin/fly
+
     - name: Run Integration Tests
       env:
         FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
