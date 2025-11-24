@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Optional, Dict, Any, List
 import uuid
 import requests
-from .exceptions import EZThrottleError
+from .exceptions import EZThrottleError, ForwardToEZThrottle
 
 
 class StepType(Enum):
@@ -388,6 +388,16 @@ class Step:
                 "status_code": response.status_code,
                 "error": f"Request failed: {response.status_code}"
             }
+
+        except ForwardToEZThrottle as e:
+            # User explicitly requested forwarding to EZThrottle
+            # Use custom idempotent key and metadata from exception
+            if e.idempotent_key:
+                self._idempotent_key = e.idempotent_key
+            if e.metadata:
+                self._metadata.update(e.metadata)
+
+            return self._forward_to_ezthrottle(client)
 
         except (requests.Timeout, requests.RequestException) as e:
             # Network error → try fallbacks, then forward to EZThrottle

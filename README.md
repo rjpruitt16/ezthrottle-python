@@ -78,7 +78,7 @@ Step(client)
     .idempotent_strategy(IdempotentStrategy.HASH)  # Default
     .execute()
 
-# Second call with same params � "duplicate" (not charged twice!)
+# Second call with same params � "duplicate" (not charged twice!)
 ```
 
 ### IdempotentStrategy.UNIQUE
@@ -181,13 +181,44 @@ Step(client)
     .regions(["iad", "lax", "ord"])  # Try all 3 regions
     .region_policy("fallback")  # Auto-route if region down
     .execution_mode("race")  # First completion wins
-    .webhooks([
-        {"url": "https://app.com/webhook1", "regions": ["iad"]},
-        {"url": "https://app.com/webhook2", "regions": ["lax"]}
-    ])
-    .webhook_quorum(2)  # Both webhooks must succeed
+    .webhooks([{"url": "https://app.com/webhook"}])
     .execute()
 ```
+
+## Webhook Fanout (Multiple Webhooks)
+
+Deliver job results to multiple services simultaneously:
+
+```python
+Step(client)
+    .url("https://api.stripe.com/charges")
+    .method("POST")
+    .webhooks([
+        # Primary webhook (must succeed)
+        {"url": "https://app.com/payment-complete", "has_quorum_vote": True},
+
+        # Analytics webhook (optional)
+        {"url": "https://analytics.com/track", "has_quorum_vote": False},
+
+        # Notification service (must succeed)
+        {"url": "https://notify.com/alert", "has_quorum_vote": True},
+
+        # Multi-region webhook racing
+        {"url": "https://backup.com/webhook", "regions": ["iad", "lax"], "has_quorum_vote": True}
+    ])
+    .webhook_quorum(2)  # At least 2 webhooks with has_quorum_vote=true must succeed
+    .execute()
+```
+
+**Webhook Options:**
+- `url` - Webhook endpoint URL
+- `regions` - (Optional) Deliver webhook from specific regions
+- `has_quorum_vote` - (Optional) Counts toward quorum (default: true)
+
+**Use Cases:**
+- Notify multiple services (payment processor + analytics + CRM)
+- Redundancy (multiple backup webhooks)
+- Multi-region delivery (low latency globally)
 
 ## Retry Policies
 
@@ -204,6 +235,103 @@ Step(client)
     })
     .execute()
 ```
+
+## @auto_forward Decorator (Legacy Code Integration)
+
+**The killer feature:** Integrate EZThrottle into existing code without rewriting error handling!
+
+```python
+from ezthrottle import auto_forward, ForwardToEZThrottle
+
+@auto_forward(client)
+def process_payment(order_id):
+    """
+    Legacy payment processing code.
+    Just raise ForwardToEZThrottle on errors - decorator handles the rest!
+    """
+    try:
+        response = requests.post(
+            "https://api.stripe.com/charges",
+            headers={"Authorization": "Bearer sk_live_..."},
+            json={"amount": 1000, "currency": "usd"}
+        )
+
+        if response.status_code == 429:
+            # Decorator catches this and auto-forwards to EZThrottle!
+            raise ForwardToEZThrottle(
+                url="https://api.stripe.com/charges",
+                method="POST",
+                headers={"Authorization": "Bearer sk_live_..."},
+                body='{"amount": 1000, "currency": "usd"}',
+                idempotent_key=f"order_{order_id}",
+                metadata={"order_id": order_id, "customer_id": "cust_123"},
+                webhooks=[{"url": "https://app.com/payment-complete"}]
+            )
+
+        return response.json()
+
+    except requests.RequestException as e:
+        # Network errors also auto-forwarded
+        raise ForwardToEZThrottle(
+            url="https://api.stripe.com/charges",
+            method="POST",
+            idempotent_key=f"order_{order_id}",
+            metadata={"error": str(e)}
+        )
+
+# Call your legacy function - works exactly the same!
+result = process_payment("order_12345")
+# Returns: {"job_id": "...", "status": "queued"}
+```
+
+**Why this is amazing:**
+- ✅ No code refactoring required
+- ✅ Drop-in replacement for existing error handling
+- ✅ Keep your existing function signatures
+- ✅ Gradual migration path
+- ✅ Works with any HTTP library (requests, httpx, urllib)
+
+## Production Ready ✅
+
+This SDK is production-ready with comprehensive integration tests running on every push.
+
+### Integration Test Suite
+
+The `test-app/` directory contains a **full integration test suite** deployed to Fly.io that validates:
+- Multi-region racing with fallback
+- Webhook delivery and polling
+- Idempotent key strategies (HASH vs UNIQUE)
+- Fallback chains (OnError, OnTimeout)
+- On-success/on-failure workflows
+- Auto-forward decorator
+
+**Run tests locally:**
+```bash
+cd test-app
+make integration
+```
+
+**Test flow:**
+1. Deploys FastAPI test app to Fly.io
+2. Runs 7 Hurl integration tests
+3. Validates webhook delivery
+4. Tears down deployment
+
+**CI/CD:**
+- ✅ GitHub Actions runs full integration suite on every push
+- ✅ Tests against live EZThrottle backend
+- ✅ 100% test coverage of SDK features
+
+### Test App as Reference Implementation
+
+See `test-app/app.py` for **production-ready examples** of:
+- Performance vs Frugal workflows
+- Multi-region racing
+- Idempotent key strategies
+- Webhook handling
+- Auto-forward decorator
+
+**This is the same code we use to validate production deployments!**
 
 ## Legacy API (Deprecated)
 

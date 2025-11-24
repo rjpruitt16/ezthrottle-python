@@ -1,9 +1,11 @@
 """EZThrottle client implementation via TracktTags proxy"""
 import time
 import json
-from typing import Optional, Dict, Any, List
+import uuid
+from typing import Optional, Dict, Any, List, Callable
+from functools import wraps
 import requests
-from .exceptions import EZThrottleError, TimeoutError
+from .exceptions import EZThrottleError, TimeoutError, ForwardToEZThrottle
 
 class EZThrottle:
     def __init__(
@@ -273,5 +275,79 @@ class EZThrottle:
             # User should implement their own webhook polling
             # This is just a placeholder
             time.sleep(poll_interval)
-        
+
         raise TimeoutError(f"Timeout waiting for job {job_id}")
+
+
+def auto_forward(client: EZThrottle) -> Callable:
+    """
+    Decorator that automatically forwards ForwardToEZThrottle exceptions to EZThrottle.
+
+    Perfect for integrating EZThrottle into legacy code without major refactoring.
+
+    Usage:
+        @ezthrottle.auto_forward(client)
+        def process_payment(order_id):
+            try:
+                response = requests.post(
+                    "https://api.stripe.com/charges",
+                    headers={"Authorization": "Bearer sk_live_..."},
+                    json={"amount": 1000, "currency": "usd"}
+                )
+
+                if response.status_code == 429:
+                    # Auto-forwarded to EZThrottle
+                    raise ForwardToEZThrottle(
+                        url="https://api.stripe.com/charges",
+                        method="POST",
+                        headers={"Authorization": "Bearer sk_live_..."},
+                        body='{"amount": 1000, "currency": "usd"}',
+                        idempotent_key=f"order_{order_id}",
+                        metadata={"order_id": order_id}
+                    )
+
+                return response.json()
+
+            except requests.RequestException:
+                # Network error - auto-forwarded to EZThrottle
+                raise ForwardToEZThrottle(...)
+
+        # Decorator catches exception and forwards to EZThrottle
+        result = process_payment("12345")  # Returns {"job_id": "...", "status": "queued"}
+
+    Args:
+        client: EZThrottle client instance
+
+    Returns:
+        Decorated function that auto-forwards ForwardToEZThrottle exceptions
+    """
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except ForwardToEZThrottle as e:
+                # Validate required fields
+                if not e.url:
+                    raise ValueError("ForwardToEZThrottle requires 'url' field")
+
+                # Generate idempotent key if not provided (UNIQUE strategy)
+                if not e.idempotent_key:
+                    e.idempotent_key = str(uuid.uuid4())
+
+                # Auto-forward to EZThrottle
+                result = client.submit_job(
+                    url=e.url,
+                    method=e.method,
+                    headers=e.headers,
+                    body=e.body,
+                    idempotent_key=e.idempotent_key,
+                    metadata=e.metadata,
+                    webhooks=e.webhooks,
+                    regions=e.regions
+                )
+
+                return result
+
+        return wrapper
+    return decorator

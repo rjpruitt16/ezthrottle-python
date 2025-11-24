@@ -1,0 +1,42 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install poetry
+        poetry install
+
+    - name: Install Hurl
+      run: |
+        VERSION=6.2.0
+        curl -sL https://github.com/Orange-OpenSource/hurl/releases/download/$VERSION/hurl_${VERSION}_amd64.deb -o hurl.deb
+        sudo dpkg -i hurl.deb
+
+    - name: Install Fly CLI
+      uses: superfly/flyctl-actions/setup-flyctl@master
+
+    - name: Run Integration Tests
+      env:
+        FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        EZTHROTTLE_API_KEY: ${{ secrets.EZTHROTTLE_API_KEY }}
+      run: |
+        cd test-app
+        make integration
