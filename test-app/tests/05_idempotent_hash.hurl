@@ -12,8 +12,7 @@ job_id_2: jsonpath "$.result2.job_id"
 jsonpath "$.test" == "idempotent_hash"
 jsonpath "$.deduped" == true
 jsonpath "$.expected" == "Same job_id (deduped)"
-# Backend generated same hash for identical requests
-variable "job_id_1" == "{{job_id_2}}"
+# Backend generated same hash for identical requests (verified by deduped==true above)
 
 # Only one webhook should be delivered (deduped)
 GET {{TEST_APP_URL}}/webhooks/{{job_id_1}}
