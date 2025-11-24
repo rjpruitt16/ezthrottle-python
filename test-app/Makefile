@@ -31,17 +31,25 @@ integration:
 	@echo ""
 
 	@# Step 1: Deploy
-	@echo "📦 STEP 1/3: Deploying to Fly..."
+	@echo "📦 STEP 1/4: Deploying to Fly..."
 	@$(MAKE) deploy
 	@echo ""
 
-	@# Step 2: Test (if this fails, don't teardown)
-	@echo "🧪 STEP 2/3: Running integration tests..."
+	@# Step 2: Scale up (ensure app is running)
+	@echo "⬆️  STEP 2/4: Scaling app up..."
+	@fly scale count 1 --app $(APP_NAME) --yes 2>&1 || echo "⚠️  Scale up failed"
+	@echo "   Waiting 10s for app to start..."
+	@sleep 10
+	@echo "✅ App is running"
+	@echo ""
+
+	@# Step 3: Test (if this fails, don't teardown)
+	@echo "🧪 STEP 3/4: Running integration tests..."
 	@$(MAKE) test || (echo "❌ Tests failed! App left running for debugging: $(APP_URL)" && exit 1)
 	@echo ""
 
-	@# Step 3: Scale to zero (keeps app but costs nothing)
-	@echo "🔻 Scaling app to zero..."
+	@# Step 4: Scale to zero (only reached if tests pass)
+	@echo "🔻 STEP 4/4: Scaling app to zero..."
 	@$(MAKE) teardown
 	@echo "✅ Integration tests complete! App scaled to zero (no cost)"
 
