@@ -264,11 +264,11 @@ class EZThrottle:
             metadata=metadata,
             retry_at=retry_at,
         )
-        
+
         job_id = result.get("job_id")
         if not job_id:
             raise EZThrottleError("No job_id in response")
-        
+
         # Poll webhook URL for result
         start_time = time.time()
         while time.time() - start_time < timeout:
@@ -277,6 +277,243 @@ class EZThrottle:
             time.sleep(poll_interval)
 
         raise TimeoutError(f"Timeout waiting for job {job_id}")
+
+    # ============================================================================
+    # WEBHOOK SECRETS MANAGEMENT
+    # ============================================================================
+
+    def create_webhook_secret(
+        self,
+        primary_secret: str,
+        secondary_secret: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create or update webhook HMAC secrets for signature verification.
+
+        Args:
+            primary_secret: Primary webhook secret (min 16 characters)
+            secondary_secret: Optional secondary secret for rotation (min 16 characters)
+
+        Returns:
+            Response dict with status and message
+
+        Raises:
+            EZThrottleError: If secret creation fails
+
+        Example:
+            ```python
+            # Create primary secret
+            client.create_webhook_secret(
+                primary_secret="your_secure_secret_here_min_16_chars"
+            )
+
+            # Create with rotation support (primary + secondary)
+            client.create_webhook_secret(
+                primary_secret="new_secret_after_rotation",
+                secondary_secret="old_secret_before_rotation"
+            )
+            ```
+        """
+        if len(primary_secret) < 16:
+            raise ValueError("primary_secret must be at least 16 characters")
+
+        if secondary_secret and len(secondary_secret) < 16:
+            raise ValueError("secondary_secret must be at least 16 characters")
+
+        payload = {"primary_secret": primary_secret}
+        if secondary_secret:
+            payload["secondary_secret"] = secondary_secret
+
+        # Build proxy request
+        proxy_payload = {
+            "scope": "customer",
+            "metric_name": "",
+            "target_url": f"{self.ezthrottle_url}/api/v1/webhook-secrets",
+            "method": "POST",
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps(payload)
+        }
+
+        response = requests.post(
+            f"{self.tracktags_url}/api/v1/proxy",
+            json=proxy_payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            },
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            raise EZThrottleError(f"Failed to create webhook secret: {response.text}")
+
+        proxy_response = response.json()
+        if proxy_response.get("status") != "allowed":
+            raise EZThrottleError(
+                f"Request denied: {proxy_response.get('error', 'Unknown error')}"
+            )
+
+        forwarded = proxy_response.get("forwarded_response", {})
+        return json.loads(forwarded.get("body", "{}"))
+
+    def get_webhook_secret(self) -> Dict[str, Any]:
+        """
+        Get webhook secrets (masked for security).
+
+        Returns:
+            Dict with masked secrets:
+            {
+                "customer_id": "cust_XXX",
+                "primary_secret": "abcd****efgh",
+                "secondary_secret": "ijkl****mnop" or null,
+                "has_secondary": true/false
+            }
+
+        Raises:
+            EZThrottleError: If secrets not configured (404) or request fails
+
+        Example:
+            ```python
+            secrets = client.get_webhook_secret()
+            print(f"Primary: {secrets['primary_secret']}")  # abcd****efgh
+            print(f"Has secondary: {secrets['has_secondary']}")  # True/False
+            ```
+        """
+        proxy_payload = {
+            "scope": "customer",
+            "metric_name": "",
+            "target_url": f"{self.ezthrottle_url}/api/v1/webhook-secrets",
+            "method": "GET",
+            "headers": {},
+            "body": ""
+        }
+
+        response = requests.post(
+            f"{self.tracktags_url}/api/v1/proxy",
+            json=proxy_payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            },
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            raise EZThrottleError(f"Failed to get webhook secret: {response.text}")
+
+        proxy_response = response.json()
+        if proxy_response.get("status") != "allowed":
+            raise EZThrottleError(
+                f"Request denied: {proxy_response.get('error', 'Unknown error')}"
+            )
+
+        forwarded = proxy_response.get("forwarded_response", {})
+        status_code = forwarded.get("status_code")
+
+        if status_code == 404:
+            raise EZThrottleError("No webhook secrets configured. Call create_webhook_secret() first.")
+
+        if status_code < 200 or status_code >= 300:
+            raise EZThrottleError(f"Failed to get webhook secrets: {forwarded.get('body')}")
+
+        return json.loads(forwarded.get("body", "{}"))
+
+    def delete_webhook_secret(self) -> Dict[str, Any]:
+        """
+        Delete webhook secrets.
+
+        Returns:
+            Response dict with status and message
+
+        Raises:
+            EZThrottleError: If deletion fails
+
+        Example:
+            ```python
+            result = client.delete_webhook_secret()
+            print(result)  # {"status": "ok", "message": "Webhook secrets deleted"}
+            ```
+        """
+        proxy_payload = {
+            "scope": "customer",
+            "metric_name": "",
+            "target_url": f"{self.ezthrottle_url}/api/v1/webhook-secrets",
+            "method": "DELETE",
+            "headers": {},
+            "body": ""
+        }
+
+        response = requests.post(
+            f"{self.tracktags_url}/api/v1/proxy",
+            json=proxy_payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            },
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            raise EZThrottleError(f"Failed to delete webhook secret: {response.text}")
+
+        proxy_response = response.json()
+        if proxy_response.get("status") != "allowed":
+            raise EZThrottleError(
+                f"Request denied: {proxy_response.get('error', 'Unknown error')}"
+            )
+
+        forwarded = proxy_response.get("forwarded_response", {})
+        return json.loads(forwarded.get("body", "{}"))
+
+    def rotate_webhook_secret(self, new_secret: str) -> Dict[str, Any]:
+        """
+        Rotate webhook secret safely by promoting secondary to primary.
+
+        This is a convenience method that handles secret rotation:
+        1. Get current primary secret
+        2. Set new secret as primary, old primary as secondary
+        3. After verifying new secret works, call again with only new secret
+
+        Args:
+            new_secret: New webhook secret to set as primary
+
+        Returns:
+            Response dict with status and message
+
+        Example:
+            ```python
+            # Step 1: Rotate (keeps old secret as backup)
+            client.rotate_webhook_secret("new_secret_min_16_chars")
+
+            # Step 2: After verifying webhooks work with new secret
+            # Remove old secret by setting only new one
+            client.create_webhook_secret("new_secret_min_16_chars")
+            ```
+        """
+        if len(new_secret) < 16:
+            raise ValueError("new_secret must be at least 16 characters")
+
+        try:
+            # Get current secret to use as secondary
+            current = self.get_webhook_secret()
+            old_primary = current.get("primary_secret", "")
+
+            # If we have a masked secret, we can't use it as secondary
+            # In this case, just set the new secret without secondary
+            if "****" in old_primary:
+                return self.create_webhook_secret(new_secret)
+
+            # Set new as primary, old as secondary
+            return self.create_webhook_secret(
+                primary_secret=new_secret,
+                secondary_secret=old_primary
+            )
+
+        except EZThrottleError as e:
+            if "No webhook secrets configured" in str(e):
+                # No existing secret, just create new one
+                return self.create_webhook_secret(new_secret)
+            raise
 
 
 def auto_forward(client: EZThrottle) -> Callable:

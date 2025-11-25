@@ -335,6 +335,222 @@ def handle_webhook():
     return {'ok': True}
 ```
 
+## Webhook Security (HMAC Signatures)
+
+**Protect your webhooks from spoofing attacks** with HMAC-SHA256 signature verification. EZThrottle signs all webhook requests when you configure a webhook secret.
+
+### Quick Start
+
+1. **Create a webhook secret:**
+```python
+from ezthrottle import EZThrottle
+
+client = EZThrottle(api_key="your_api_key")
+
+# Create secret (min 16 characters)
+client.create_webhook_secret(
+    primary_secret="your_secure_random_secret_min_16_chars"
+)
+```
+
+2. **Verify signatures in your webhook handler:**
+```python
+from flask import Flask, request
+from ezthrottle import verify_webhook_signature_strict, WebhookVerificationError
+
+app = Flask(__name__)
+WEBHOOK_SECRET = "your_secure_random_secret_min_16_chars"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    # Get signature from header
+    signature = request.headers.get('X-EZThrottle-Signature', '')
+    payload = request.get_data()
+
+    # Verify signature (raises exception if invalid)
+    try:
+        verify_webhook_signature_strict(payload, signature, WEBHOOK_SECRET)
+    except WebhookVerificationError as e:
+        return {'error': str(e)}, 401
+
+    # Signature valid - process webhook
+    data = request.json
+    print(f"Job {data['job_id']} completed: {data['status']}")
+
+    return {'ok': True}
+```
+
+### Signature Format
+
+EZThrottle includes an `X-EZThrottle-Signature` header with each webhook request:
+
+```
+X-EZThrottle-Signature: t=1234567890,v1=abc123def456...
+```
+
+**Format:** `t=timestamp,v1=signature`
+- `t` - Unix timestamp when signature was generated
+- `v1` - HMAC-SHA256 hex signature of `{timestamp}.{json_body}`
+
+### Verification Methods
+
+#### 1. Strict Verification (Recommended)
+
+Raises `WebhookVerificationError` if signature is invalid:
+
+```python
+from ezthrottle import verify_webhook_signature_strict, WebhookVerificationError
+
+try:
+    verify_webhook_signature_strict(
+        payload=request.get_data(),
+        signature_header=request.headers.get('X-EZThrottle-Signature', ''),
+        secret=WEBHOOK_SECRET,
+        tolerance=300  # 5 minutes (default)
+    )
+    # Signature valid!
+except WebhookVerificationError as e:
+    return {'error': f'Invalid signature: {str(e)}'}, 401
+```
+
+#### 2. Boolean Verification
+
+Returns `(verified: bool, reason: str)`:
+
+```python
+from ezthrottle import verify_webhook_signature
+
+verified, reason = verify_webhook_signature(
+    payload=request.get_data(),
+    signature_header=request.headers.get('X-EZThrottle-Signature', ''),
+    secret=WEBHOOK_SECRET
+)
+
+if not verified:
+    print(f"Verification failed: {reason}")
+    return {'error': 'Invalid signature'}, 401
+```
+
+**Failure reasons:**
+- `no_signature_header` - Missing X-EZThrottle-Signature header
+- `missing_v1_signature` - Malformed signature header
+- `timestamp_expired (diff=350s, tolerance=300s)` - Timestamp too old
+- `signature_mismatch` - Signature doesn't match payload
+- `verification_error: {details}` - Parsing or crypto error
+
+### Secret Rotation
+
+Use primary + secondary secrets for zero-downtime rotation:
+
+```python
+# Step 1: Add new secret as primary, keep old as secondary
+client.create_webhook_secret(
+    primary_secret="new_secret_after_rotation_min_16",
+    secondary_secret="old_secret_before_rotation_min_16"
+)
+
+# Step 2: Update webhook handlers to verify with both secrets
+from ezthrottle import try_verify_with_secrets
+
+verified, reason = try_verify_with_secrets(
+    payload=request.get_data(),
+    signature_header=request.headers.get('X-EZThrottle-Signature', ''),
+    primary_secret="new_secret_after_rotation_min_16",
+    secondary_secret="old_secret_before_rotation_min_16"
+)
+
+if not verified:
+    return {'error': f'Invalid signature: {reason}'}, 401
+
+print(f"Verified with: {reason}")  # "valid_primary" or "valid_secondary"
+
+# Step 3: After verifying all webhooks work with new secret,
+# remove secondary secret
+client.create_webhook_secret("new_secret_after_rotation_min_16")
+```
+
+**Or use the convenience method:**
+
+```python
+# Automatically rotates: new → primary, old → secondary
+client.rotate_webhook_secret("new_secret_min_16_chars")
+```
+
+### Manage Secrets
+
+```python
+# Create or update secrets
+client.create_webhook_secret(
+    primary_secret="your_secret_min_16_chars",
+    secondary_secret="optional_backup_min_16_chars"  # For rotation
+)
+
+# Get secrets (masked for security)
+secrets = client.get_webhook_secret()
+print(secrets)
+# {
+#   "customer_id": "cust_XXX",
+#   "primary_secret": "your****ars",
+#   "secondary_secret": "opti****ars",
+#   "has_secondary": True
+# }
+
+# Delete secrets
+client.delete_webhook_secret()
+```
+
+### Best Practices
+
+1. **Always verify signatures in production** - Prevent webhook spoofing attacks
+2. **Use strong secrets** - Generate random 32+ character secrets
+3. **Rotate secrets periodically** - Use primary + secondary for zero-downtime rotation
+4. **Set tolerance appropriately** - Default 5 minutes (300s) prevents replay attacks
+5. **Secure secret storage** - Store secrets in environment variables, never in code
+
+### Example: Production-Ready Webhook Handler
+
+```python
+from flask import Flask, request
+from ezthrottle import try_verify_with_secrets, WebhookVerificationError
+import os
+
+app = Flask(__name__)
+
+PRIMARY_SECRET = os.environ.get('WEBHOOK_SECRET_PRIMARY')
+SECONDARY_SECRET = os.environ.get('WEBHOOK_SECRET_SECONDARY')  # Optional
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    # Verify signature
+    verified, reason = try_verify_with_secrets(
+        payload=request.get_data(),
+        signature_header=request.headers.get('X-EZThrottle-Signature', ''),
+        primary_secret=PRIMARY_SECRET,
+        secondary_secret=SECONDARY_SECRET
+    )
+
+    if not verified:
+        app.logger.warning(f"Invalid webhook signature: {reason}")
+        return {'error': 'Invalid signature'}, 401
+
+    # Signature valid - process webhook
+    data = request.json
+    job_id = data.get('job_id')
+    status = data.get('status')
+
+    app.logger.info(f"Webhook verified ({reason}): job_id={job_id}, status={status}")
+
+    # Your business logic here
+    if status == 'success':
+        response_data = data.get('response', {})
+        # Process successful result
+    else:
+        # Handle failure
+        pass
+
+    return {'ok': True}
+```
+
 ## Mixed Workflow Chains (FRUGAL ↔ PERFORMANCE)
 
 Mix FRUGAL and PERFORMANCE steps in the same workflow to optimize for both cost and speed:
