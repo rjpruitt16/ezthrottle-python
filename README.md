@@ -499,6 +499,32 @@ print(secrets)
 client.delete_webhook_secret()
 ```
 
+### Quick Commands (One-Liners)
+
+Manage secrets from command line without writing a script:
+
+```bash
+# Create secret
+python -c "from ezthrottle import EZThrottle; EZThrottle(api_key='your_api_key').create_webhook_secret('your_secret_min_16_chars')"
+
+# Get secrets (view masked)
+python -c "from ezthrottle import EZThrottle; import json; print(json.dumps(EZThrottle(api_key='your_api_key').get_webhook_secret(), indent=2))"
+
+# Rotate secret
+python -c "from ezthrottle import EZThrottle; EZThrottle(api_key='your_api_key').rotate_webhook_secret('new_secret_min_16_chars')"
+
+# Delete secrets
+python -c "from ezthrottle import EZThrottle; print(EZThrottle(api_key='your_api_key').delete_webhook_secret())"
+```
+
+**Tip:** Store your API key in an environment variable:
+```bash
+export EZTHROTTLE_API_KEY="your_api_key"
+
+# Then use in commands
+python -c "import os; from ezthrottle import EZThrottle; EZThrottle(api_key=os.getenv('EZTHROTTLE_API_KEY')).create_webhook_secret('secret')"
+```
+
 ### Best Practices
 
 1. **Always verify signatures in production** - Prevent webhook spoofing attacks
