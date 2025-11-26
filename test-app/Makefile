@@ -4,11 +4,17 @@
 APP_NAME := ezthrottle-sdk-py
 APP_URL := https://$(APP_NAME).fly.dev
 
+# EZThrottle environment (prod, staging, or custom app name)
+EZTHROTTLE_ENV ?= prod
+EZTHROTTLE_URL := $(if $(filter prod,$(EZTHROTTLE_ENV)),https://ezthrottle.fly.dev,$(if $(filter staging,$(EZTHROTTLE_ENV)),https://ezthrottle-staging.fly.dev,https://$(EZTHROTTLE_ENV).fly.dev))
+
 help:
 	@echo "EZThrottle Python SDK Integration Tests"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make integration  # Deploy → Test → Teardown (run on every push)"
+	@echo "  make integration                      # Test against prod (default)"
+	@echo "  make integration EZTHROTTLE_ENV=staging  # Test against staging"
+	@echo "  make integration EZTHROTTLE_ENV=my-app   # Test against custom app"
 	@echo ""
 	@echo "Individual targets:"
 	@echo "  make secrets     # Set Fly secrets from .env.test"
@@ -17,17 +23,17 @@ help:
 	@echo "  make teardown    # Destroy Fly app"
 
 secrets:
-	@echo "🔒 Setting Fly secrets..."
+	@echo "🔒 Setting Fly secrets (EZThrottle: $(EZTHROTTLE_ENV) → $(EZTHROTTLE_URL))..."
 	@if [ -f .env.test ]; then \
-		fly secrets set --app $(APP_NAME) $$(grep -v '^#' .env.test | grep -v '^$$' | xargs) 2>/dev/null || echo "⚠️  Could not set secrets (app may not exist yet)"; \
+		fly secrets set --app $(APP_NAME) EZTHROTTLE_URL=$(EZTHROTTLE_URL) $$(grep -v '^#' .env.test | grep -v '^$$' | xargs) 2>/dev/null || echo "⚠️  Could not set secrets (app may not exist yet)"; \
 	else \
-		echo "⚠️  No .env.test file, assuming secrets already set"; \
+		fly secrets set --app $(APP_NAME) EZTHROTTLE_URL=$(EZTHROTTLE_URL) 2>/dev/null || echo "⚠️  Could not set secrets"; \
 	fi
 	@echo "✅ Secrets set (or skipped)"
 
 # ONE COMMAND: Deploy → Test → Teardown (only if tests pass)
 integration:
-	@echo "🚀 Starting integration test cycle..."
+	@echo "🚀 Starting integration test cycle (EZThrottle: $(EZTHROTTLE_ENV))..."
 	@echo ""
 
 	@# Step 1: Deploy
