@@ -46,6 +46,297 @@ result = (
 print(f"Job ID: {result['job_id']}")
 ```
 
+## Pricing
+
+### Free Tier - 1 Million Requests/Month Forever
+
+**No credit card. No limits. All features included.**
+
+- 1,000,000 requests per month FREE
+- Multi-region racing, webhook fanout, retry logic - everything
+- ~30,000 requests/day (covers most production apps)
+- Perfect for indie devs, startups, side projects
+
+### Early Adopter Pricing (Subject to Change)
+
+| Tier | Included Requests | Monthly Price | Overage (per 100k) | Hard Cap |
+|------|------------------|---------------|-------------------|----------|
+| **Free** | 1M requests/month | $0 | N/A | 1M (upgrade to continue) |
+| **Indie** | 2M requests/month | $50 | $50/100k | 5M (upgrade to continue) |
+| **Growth** | 5M requests/month | $200 | $40/100k | 10M (upgrade to continue) |
+| **Pro** | 10M requests/month | $500 | $25/100k | 25M (upgrade to continue) |
+
+**Hard caps protect you from surprise bills.** When you hit your tier's cap, requests pause until you upgrade or the month resets.
+
+**Overage pricing:** Pay only for what you use beyond your included requests, up to your tier's hard cap.
+
+**Example:** Indie tier uses 3M requests = $50 (base) + $50 (1M overage) = $100 total
+
+### Smart Upgrade Incentives
+
+**The math makes upgrading obvious:**
+
+**Scenario: Using 8M requests/month**
+
+| Option | Calculation | Total Cost |
+|--------|-------------|------------|
+| Stay on Indie (hit cap) | Service stops at 5M | ❌ Lost revenue |
+| Pay Indie overages | $50 + ($50 × 30) = $50 + $1,500 | ❌ $1,550/month |
+| Upgrade to Growth | $200 base + ($40 × 30) = $200 + $1,200 | ⚠️ $1,400/month |
+| Upgrade to Pro | $500 base (includes 10M) | ✅ $500/month |
+
+**Upgrading to Pro saves you $900-1,050/month** vs paying overages.
+
+**The tiers are designed so you WANT to upgrade** - overage pricing is intentionally expensive to make the next tier a no-brainer.
+
+**Need 25M+ requests/month, no caps, or custom SLAs?**
+👉 **[Contact us for enterprise pricing](https://www.ezthrottle.network/contact)**
+
+---
+
+## What's a Good Night's Sleep Worth?
+
+**3am PagerDuty alert:** "Stripe API down. Retry storm taking down prod. Revenue stopped."
+
+You wake up. Laptop. VPN. SSH into servers. Lambda logs scrolling. DynamoDB throttling. SQS backlog exploding. IAM policies denying for no reason. Concurrent execution limits hit. CloudWatch costs spiking.
+
+You spend 2 hours debugging. Fix the immediate issue. Write a post-mortem. Promise to "build better retry logic."
+
+**Three months later, same alert. Different API.**
+
+---
+
+### The AWS Nightmare Nobody Talks About
+
+**Building retry infrastructure on AWS means:**
+
+**Lambda Hell:**
+- Concurrent execution limits (1000 by default, need to request increases)
+- Cold starts killing performance (500ms+ latency spikes)
+- IAM policies that randomly deny for no fucking reason
+- CloudWatch logs costing more than the Lambdas themselves
+- Debugging distributed traces across 47 Lambda invocations
+
+**SQS Madness:**
+- Dead letter queues filling up
+- Visibility timeout confusion (did it process? who knows!)
+- FIFO vs Standard (wrong choice = data loss)
+- Poison messages breaking your workers
+- No built-in retry logic for 429/500 errors
+
+**DynamoDB Pain:**
+- Provisioned throughput math (always wrong)
+- Hot partition keys throttling randomly
+- GSI limits (20 max, need to plan carefully)
+- Point-in-time recovery costing $$$
+- Read/write capacity units (what even are these?)
+
+**The Real Kicker:**
+- **AWS has no built-in tool for queueing 429 and 500 errors at scale**
+- You have to build it yourself
+- With Lambda + SQS + DynamoDB + Step Functions + EventBridge
+- And debug the whole mess when it breaks at 3am
+
+---
+
+## Why AWS Can't Do This (And EZThrottle Can)
+
+**Performance:**
+- **EZThrottle core:** Written in Gleam (compiles to Erlang/OTP)
+- **Actor-based concurrency:** Millions of jobs, zero race conditions
+- **Sub-millisecond job routing:** Faster than Lambda cold starts
+- **Multi-region racing:** Native to our architecture (not bolted on)
+
+**AWS Stack:**
+- Lambda: Cold starts, concurrent execution limits, IAM hell
+- SQS: No native retry logic, visibility timeout confusion
+- DynamoDB: Hot partitions, throughput throttling
+- Step Functions: $0.025 per 1000 state transitions (adds up fast)
+
+**You can't build this on AWS serverless and get the same performance.**
+We tried. It doesn't work. That's why we built EZThrottle.
+
+---
+
+## The Hidden Cost of Retry Storms
+
+**What happens when Stripe/OpenAI/Anthropic has an outage?**
+
+### Without EZThrottle:
+
+**5-minute API outage causes:**
+```
+1000 req/sec × 5 retries = 5000 req/sec retry storm
+5000 req/sec × 300 seconds = 1.5M failed requests
+1.5M × 10KB payload = 15GB egress
+15GB × $0.09/GB = $1,350 in AWS egress fees
+
+Plus:
+- Lambda concurrent execution limit hit (all new requests fail)
+- SQS queues backing up (visibility timeout chaos)
+- DynamoDB throttling (hot partition from retry attempts)
+- CloudWatch logs exploding ($200+ in 5 minutes)
+- Your servers maxed out (can't serve real users)
+
+Total cost: $1,550 + 2 hours of engineer time + lost revenue
+```
+
+### With EZThrottle:
+
+**Same 5-minute outage:**
+```
+1000 req/sec × 1 submit to EZThrottle = 1000 req/sec
+300k requests × $0.50/1k = $150 total
+
+Plus:
+- Your servers stay healthy (serving real users)
+- No retry storm (EZThrottle handles retries)
+- No egress fees (one request out, webhook back)
+- No debugging at 3am
+- No lost revenue
+
+Total cost: $150 + 0 engineer time + 0 lost revenue
+```
+
+**Savings: $1,400 per outage** (and your sanity)
+
+---
+
+## The Hidden Cost of Building This Yourself
+
+**You're about to hire 2 engineers to build retry infrastructure. Let's do the math.**
+
+### DIY Cost (AWS + Engineers):
+
+| Component | Year 1 | Ongoing |
+|-----------|--------|---------|
+| **Infrastructure** | | |
+| Lambda (retries + webhooks) | $1,200 | $1,200/year |
+| SQS (job queues) | $1,200 | $1,200/year |
+| DynamoDB (state tracking) | $3,000 | $3,000/year |
+| CloudWatch (logs) | $1,200 | $1,200/year |
+| Data transfer (egress fees) | $12,000 | $12,000/year |
+| **Infrastructure subtotal** | **$18,600** | **$18,600/year** |
+| | | |
+| **Engineering** | | |
+| Initial build (3 months, 2 engineers @ $150k) | $75,000 | - |
+| Ongoing maintenance (30% time, 2 engineers) | $45,000 | $90,000/year |
+| On-call rotation (outage response) | $15,000 | $30,000/year |
+| **Engineering subtotal** | **$135,000** | **$120,000/year** |
+| | | |
+| **TOTAL DIY COST** | **$153,600** | **$138,600/year** |
+
+### EZThrottle Cost:
+
+| Component | Year 1 | Ongoing |
+|-----------|--------|---------|
+| Free tier (1M requests/month) | $0 | $0/year |
+| Pro tier (2M requests/month) | $6,000 | $6,000/year |
+| Engineer time to integrate | $5,000 | $0/year |
+| **TOTAL EZTHROTTLE COST** | **$11,000** | **$6,000/year** |
+
+**Savings: $142,600 in Year 1, $132,600/year ongoing**
+
+Or put another way: **You save an entire senior engineer's salary every year.**
+
+---
+
+## FRUGAL vs PERFORMANCE: Choose Your Strategy
+
+| Feature | FRUGAL | PERFORMANCE |
+|---------|--------|-------------|
+| **Execution** | Client-side first | Server-side distributed |
+| **When to use** | High success rate (95%+) | Mission-critical / high traffic |
+| **Cost** | Only pay when forwarded | Always uses EZThrottle |
+| **During API outages** | Retry storm (melts your servers) | Servers stay healthy |
+| **Egress fees** | High (every retry = AWS egress) | Low (one request to EZThrottle) |
+| **Lambda limits** | Hit concurrent execution cap | Never hit limits |
+| **IAM debugging** | Your problem | Not your problem |
+| **Good night's sleep** | Nope | Yes |
+
+### Rate Limiting: 2 RPS Per Domain
+
+EZThrottle throttles at **2 requests per second PER TARGET DOMAIN**:
+
+- `api.stripe.com` → 2 RPS
+- `api.openai.com` → 2 RPS
+- `api.anthropic.com` → 2 RPS
+
+All domains run concurrently. The limit is per destination, not per account.
+
+**Need higher limits?** Return `X-EZTHROTTLE-RPS` header or [request custom defaults](https://github.com/rjpruitt16/ezconfig).
+
+---
+
+## Real-World Example: Payment Processor
+
+**Before EZThrottle (AWS Lambda + SQS):**
+- Stripe outage: 15 minutes
+- Retry storm: 2M failed requests
+- AWS egress fees: $1,800
+- Lambda concurrent execution limit hit: 45 minutes total downtime
+- Lost revenue: $50,000
+- Engineer time debugging: 6 hours (including 3am wake-up)
+- CloudWatch logs: $400
+- Customer support tickets: 200
+- **Total cost per outage: $52,200**
+
+**After EZThrottle:**
+- Same Stripe outage: 15 minutes
+- Submitted to EZThrottle: 300k requests
+- EZThrottle cost: $150
+- Servers stayed online: 0 minutes downtime
+- Lost revenue: $0
+- Engineer time: 0 hours (slept through it)
+- Customer support tickets: 5
+- **Total cost per outage: $150**
+
+**ROI: 348x cost reduction per outage**
+
+Plus ongoing savings:
+- 60% reduction in AWS egress fees ($7,200/year saved)
+- Zero Lambda IAM debugging (priceless)
+- No more 3am pages (actually priceless)
+- One less engineer needed ($150k/year saved)
+
+---
+
+## What You're Really Paying For
+
+❌ **Wrong comparison:** "EZThrottle ($500/1M) vs Lambda ($0.20/1M)"
+→ This ignores SQS, DynamoDB, egress, IAM hell, and engineers
+
+✅ **Right comparison:** "EZThrottle ($6k/year) vs DIY ($139k/year)"
+→ Lambda + SQS + DynamoDB + engineers + sanity
+
+**You're not paying for request proxying.**
+**You're paying to never debug Lambda IAM policies at 3am again.**
+
+**What you get:**
+- ✅ No retry storms during API outages
+- ✅ No Lambda concurrent execution limits
+- ✅ No IAM policy debugging hell
+- ✅ No SQS dead letter queue mysteries
+- ✅ No DynamoDB hot partition throttling
+- ✅ Multi-region racing (3+ regions, fastest wins)
+- ✅ Webhook reliability (automatic retries)
+- ✅ Built in Gleam/OTP (actor-based, zero race conditions)
+- ✅ Sleep through outages (we handle it)
+
+**AWS can't do this at this scale. That's why EZThrottle exists.**
+
+---
+
+## Early Adopter Benefits
+
+**Lock in these rates by signing up now.** Pricing subject to change for new customers. Early adopters keep their tier pricing even as we adjust rates.
+
+**Questions?**
+👉 **[Pricing FAQ](https://www.ezthrottle.network/pricing)** | **[Contact sales](https://www.ezthrottle.network/contact)**
+
+**Ready to stop debugging Lambda at 3am?**
+👉 **[Start free with 1M requests/month](https://www.ezthrottle.network/)**
+
 ## Step Types
 
 ### StepType.PERFORMANCE (Server-side execution)
