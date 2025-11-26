@@ -1,7 +1,7 @@
 # Test 2: PERFORMANCE - Multi-region racing
 # Flow: Submit job with 3 regions → Race execution → Verify fastest wins
 
-POST {{TEST_APP_URL}}/test/performance/racing
+POST {{APP_URL}}/test/performance/racing
 HTTP 200
 
 [Captures]
@@ -14,7 +14,7 @@ jsonpath "$.result.status" == "racing"
 jsonpath "$.idempotent_key" startsWith "performance_racing_"
 
 # Poll for webhook (racing might be faster, but allow 30s)
-GET {{TEST_APP_URL}}/webhooks/{{job_id}}
+GET {{APP_URL}}/webhooks/{{job_id}}
 [Options]
 retry: 30
 retry-interval: 1000

@@ -1,7 +1,7 @@
 # Test 3: PERFORMANCE - Fallback chain (OnError → OnTimeout)
 # Flow: Primary fails 500 → Fallback1 (OnError) → Fallback2 (OnTimeout) → Success
 
-POST {{TEST_APP_URL}}/test/performance/fallback-chain
+POST {{APP_URL}}/test/performance/fallback-chain
 HTTP 200
 
 [Captures]
@@ -15,7 +15,7 @@ jsonpath "$.idempotent_key" startsWith "fallback_chain_"
 
 # Poll for webhook (fallback chain takes longer: 500 error + 2s delay + 500ms timeout)
 # Total: ~3-4 seconds, allow 45s for safety
-GET {{TEST_APP_URL}}/webhooks/{{job_id}}
+GET {{APP_URL}}/webhooks/{{job_id}}
 [Options]
 retry: 45
 retry-interval: 1000

@@ -1,7 +1,7 @@
 # Test 5: Idempotent Key - HASH strategy (dedupe)
 # Flow: Submit same request twice → Backend dedupes → Same job_id
 
-POST {{TEST_APP_URL}}/test/idempotent/hash
+POST {{APP_URL}}/test/idempotent/hash
 HTTP 200
 
 [Captures]
@@ -15,7 +15,7 @@ jsonpath "$.expected" == "Same job_id (deduped)"
 # Backend generated same hash for identical requests (verified by deduped==true above)
 
 # Only one webhook should be delivered (deduped)
-GET {{TEST_APP_URL}}/webhooks/{{job_id_1}}
+GET {{APP_URL}}/webhooks/{{job_id_1}}
 [Options]
 retry: 30
 retry-interval: 1000

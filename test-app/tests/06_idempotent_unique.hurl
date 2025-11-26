@@ -1,7 +1,7 @@
 # Test 6: Idempotent Key - UNIQUE strategy (allow duplicates)
 # Flow: Submit same request with different keys → Both allowed → Different job_ids
 
-POST {{TEST_APP_URL}}/test/idempotent/unique
+POST {{APP_URL}}/test/idempotent/unique
 HTTP 200
 
 [Captures]
@@ -19,7 +19,7 @@ jsonpath "$.key1" startsWith "idempotent_unique_1_"
 jsonpath "$.key2" startsWith "idempotent_unique_2_"
 
 # Both webhooks should be delivered
-GET {{TEST_APP_URL}}/webhooks/{{job_id_1}}
+GET {{APP_URL}}/webhooks/{{job_id_1}}
 [Options]
 retry: 30
 retry-interval: 1000
@@ -30,7 +30,7 @@ jsonpath "$.found" == true
 jsonpath "$.webhook.data.job_id" == "{{job_id_1}}"
 jsonpath "$.webhook.data.idempotent_key" == "{{key_1}}"
 
-GET {{TEST_APP_URL}}/webhooks/{{job_id_2}}
+GET {{APP_URL}}/webhooks/{{job_id_2}}
 [Options]
 retry: 30
 retry-interval: 1000

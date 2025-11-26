@@ -1,7 +1,7 @@
 # Test 7: @auto_forward Decorator - Legacy code integration
 # Flow: Legacy code raises exception → Decorator auto-forwards → Job queued
 
-POST {{TEST_APP_URL}}/test/decorator/auto-forward
+POST {{APP_URL}}/test/decorator/auto-forward
 HTTP 200
 
 [Captures]
@@ -16,7 +16,7 @@ jsonpath "$.result.job_id" exists
 jsonpath "$.idempotent_key" startsWith "decorator_forward_"
 
 # Poll for webhook (auto-forwarded request)
-GET {{TEST_APP_URL}}/webhooks/{{job_id}}
+GET {{APP_URL}}/webhooks/{{job_id}}
 [Options]
 retry: 30
 retry-interval: 1000

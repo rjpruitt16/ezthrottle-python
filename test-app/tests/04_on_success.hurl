@@ -1,7 +1,7 @@
 # Test 4: PERFORMANCE - on_success workflow
 # Flow: Parent job → Success → Child job spawned → Both webhooks delivered
 
-POST {{TEST_APP_URL}}/test/workflow/on-success
+POST {{APP_URL}}/test/workflow/on-success
 HTTP 200
 
 [Captures]
@@ -16,7 +16,7 @@ jsonpath "$.parent_key" startsWith "on_success_parent_"
 jsonpath "$.child_key" startsWith "on_success_child_"
 
 # Poll for parent webhook
-GET {{TEST_APP_URL}}/webhooks/{{parent_job_id}}
+GET {{APP_URL}}/webhooks/{{parent_job_id}}
 [Options]
 retry: 30
 retry-interval: 1000
@@ -29,7 +29,7 @@ jsonpath "$.webhook.data.idempotent_key" == "{{parent_key}}"
 
 # Poll for child webhook (spawned after parent completes + 1s delay)
 # Allow extra time for on_success spawn + execution
-GET {{TEST_APP_URL}}/webhooks
+GET {{APP_URL}}/webhooks
 [Options]
 retry: 45
 retry-interval: 1000
