@@ -46,9 +46,11 @@ result = (
 print(f"Job ID: {result['job_id']}")
 ```
 
-## Pricing
+---
 
-### Free Tier - 1 Million Requests/Month Forever
+# Pricing
+
+## Free Tier - 1 Million Requests/Month Forever
 
 **No credit card. No limits. All features included.**
 
@@ -57,7 +59,7 @@ print(f"Job ID: {result['job_id']}")
 - ~30,000 requests/day (covers most production apps)
 - Perfect for indie devs, startups, side projects
 
-### Early Adopter Pricing (Subject to Change)
+## Early Adopter Pricing (Subject to Change)
 
 | Tier | Included Requests | Monthly Price | Overage (per 100k) | Hard Cap |
 |------|------------------|---------------|-------------------|----------|
@@ -72,7 +74,7 @@ print(f"Job ID: {result['job_id']}")
 
 **Example:** Indie tier uses 3M requests = $50 (base) + $50 (1M overage) = $100 total
 
-### Smart Upgrade Incentives
+## Smart Upgrade Incentives
 
 **The math makes upgrading obvious:**
 
@@ -92,7 +94,19 @@ print(f"Job ID: {result['job_id']}")
 **Need 25M+ requests/month, no caps, or custom SLAs?**
 👉 **[Contact us for enterprise pricing](https://www.ezthrottle.network/contact)**
 
+## Early Adopter Benefits
+
+**Lock in these rates by signing up now.** Pricing subject to change for new customers. Early adopters keep their tier pricing even as we adjust rates.
+
+**Questions?**
+👉 **[Pricing FAQ](https://www.ezthrottle.network/pricing)** | **[Contact sales](https://www.ezthrottle.network/contact)**
+
+**Ready to stop debugging Lambda at 3am?**
+👉 **[Start free with 1M requests/month](https://www.ezthrottle.network/)**
+
 ---
+
+# Why This Pricing Makes Sense
 
 ## What's a Good Night's Sleep Worth?
 
@@ -106,7 +120,7 @@ You spend 2 hours debugging. Fix the immediate issue. Write a post-mortem. Promi
 
 ---
 
-### The AWS Nightmare Nobody Talks About
+## The AWS Nightmare Nobody Talks About
 
 **Building retry infrastructure on AWS means:**
 
@@ -327,15 +341,7 @@ Plus ongoing savings:
 
 ---
 
-## Early Adopter Benefits
-
-**Lock in these rates by signing up now.** Pricing subject to change for new customers. Early adopters keep their tier pricing even as we adjust rates.
-
-**Questions?**
-👉 **[Pricing FAQ](https://www.ezthrottle.network/pricing)** | **[Contact sales](https://www.ezthrottle.network/contact)**
-
-**Ready to stop debugging Lambda at 3am?**
-👉 **[Start free with 1M requests/month](https://www.ezthrottle.network/)**
+# SDK Documentation
 
 ## Step Types
 
@@ -387,7 +393,7 @@ Step(client)
     .idempotent_strategy(IdempotentStrategy.HASH)  # Default
     .execute()
 
-# Second call with same params � "duplicate" (not charged twice!)
+# Second call with same params → "duplicate" (not charged twice!)
 ```
 
 ### IdempotentStrategy.UNIQUE
@@ -414,7 +420,7 @@ while True:
 
 **Without UNIQUE strategy, polling would fail:**
 ```python
-# L BAD - Second request rejected as duplicate!
+# BAD - Second request rejected as duplicate!
 Step(client).url("https://api.com/status").execute()  # Works
 Step(client).url("https://api.com/status").execute()  # Rejected! Same hash
 ```
@@ -1357,6 +1363,10 @@ client.queue_request(
 ```
 
 **Prefer the new `Step` builder API for all new code!**
+
+---
+
+# Appendix
 
 ## Environment Variables
 
