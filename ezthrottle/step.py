@@ -74,6 +74,111 @@ class Step:
         self._on_failure_step: Optional['Step'] = None
         self._on_failure_timeout_ms: Optional[int] = None
 
+        # LLM-friendly descriptions (for AI agent frameworks like McCoy)
+        self._description: Optional[str] = None  # What this step does
+        self._response_description: Optional[str] = None  # What the response data means
+
+    def description(self, desc: str) -> 'Step':
+        """
+        Set a human-readable description of what this step does.
+
+        Used by AI agent frameworks to explain the step to LLMs.
+
+        Example:
+            Step()
+            .url("https://api.example.com/customer")
+            .description("Fetch customer data by ID for refund processing")
+        """
+        self._description = desc
+        return self
+
+    def response_description(self, desc: str) -> 'Step':
+        """
+        Describe what the response data represents.
+
+        Helps LLMs understand the returned JSON structure.
+
+        Example:
+            Step()
+            .url("https://api.example.com/customer")
+            .response_description("Customer record with id, name, email, and order history")
+        """
+        self._response_description = desc
+        return self
+
+    def get_description(self) -> Optional[str]:
+        """Get the step description."""
+        return self._description
+
+    def get_response_description(self) -> Optional[str]:
+        """Get the response description."""
+        return self._response_description
+
+    def get_execution_history(self) -> List[Dict[str, Any]]:
+        """
+        Get the execution history of this workflow.
+
+        Returns list of executed steps with their status and results.
+        Only populated after all webhooks complete.
+        """
+        return getattr(self, '_execution_history', [])
+
+    def _record_execution(self, status: str, response: Any = None, error: str = None) -> None:
+        """Record a step execution in the history."""
+        if not hasattr(self, '_execution_history'):
+            self._execution_history = []
+
+        record = {
+            "step": self._description or f"{self._method} {self._url}",
+            "status": status,  # "success" or "failed"
+        }
+        if response is not None:
+            record["response"] = response
+            if self._response_description:
+                record["response_meaning"] = self._response_description
+        if error:
+            record["error"] = error
+
+        self._execution_history.append(record)
+
+    def execution_trace(self) -> str:
+        """
+        Generate LLM-friendly trace of the completed workflow.
+
+        Shows the actual execution path (success/failure chain) with
+        real responses. Only call after all webhooks are received.
+
+        Example output:
+            1. [SUCCESS] Fetch customer data
+               Response: {"id": 123, "name": "John"}
+               Meaning: Customer record for refund processing
+            2. [FAILED] Process refund
+               Error: Insufficient funds
+        """
+        history = self.get_execution_history()
+        if not history:
+            return "No execution history."
+
+        lines = []
+        for i, record in enumerate(history, 1):
+            status = record["status"].upper()
+            step = record["step"]
+            lines.append(f"{i}. [{status}] {step}")
+
+            if "response" in record:
+                resp = str(record["response"])
+                if len(resp) > 200:
+                    resp = resp[:200] + "..."
+                lines.append(f"   Response: {resp}")
+
+            if "response_meaning" in record:
+                lines.append(f"   Meaning: {record['response_meaning']}")
+
+            if "error" in record:
+                lines.append(f"   Error: {record['error']}")
+
+        return "\n".join(lines)
+
     def type(self, step_type: StepType) -> 'Step':
         """Set step type (FRUGAL or PERFORMANCE)"""
         self._step_type = step_type
@@ -361,6 +466,9 @@ class Step:
 
             # Success! Execute on_success and return
             if 200 <= response.status_code < 300:
+                # Record success in execution history
+                self._record_execution("success", response=response.text)
+
                 # Execute on_success workflow if present
                 if self._on_success_step:
                     self._on_success_step.execute(client)
@@ -382,6 +490,7 @@ class Step:
                 return self._forward_to_ezthrottle(client)
 
             # Non-trigger error - don't forward, just return error
+            self._record_execution("failed", error=f"Request failed: {response.status_code}")
             return {
                 "status": "failed",
                 "executed_locally": True,

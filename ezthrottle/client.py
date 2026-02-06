@@ -515,6 +515,70 @@ class EZThrottle:
                 return self.create_webhook_secret(new_secret)
             raise
 
+    def forward_or_fallback(
+        self,
+        fallback: Callable[[], Any],
+        url: str,
+        method: str = "GET",
+        headers: Optional[Dict[str, str]] = None,
+        body: Optional[str] = None,
+        **kwargs
+    ) -> Any:
+        """
+        Try to forward request to EZThrottle, fall back to callback if EZThrottle is unreachable.
+
+        This makes EZThrottle a reliability LAYER, not a single point of failure.
+        If EZThrottle is down, you just lose the extra reliability features and
+        fall back to your existing solution.
+
+        Args:
+            fallback: Callback function to execute if EZThrottle is unreachable.
+                      Should return the same type of response you'd get from your
+                      existing HTTP client (e.g., requests.Response).
+            url: Target URL to request
+            method: HTTP method (GET, POST, etc)
+            headers: Optional request headers
+            body: Optional request body
+            **kwargs: Additional arguments passed to submit_job()
+
+        Returns:
+            Either EZThrottle job response or the fallback function's return value
+
+        Example:
+            ```python
+            # If EZThrottle is down, fall back to direct HTTP call
+            result = client.forward_or_fallback(
+                fallback=lambda: requests.post(
+                    "https://api.stripe.com/charges",
+                    headers={"Authorization": "Bearer sk_live_..."},
+                    json={"amount": 1000}
+                ),
+                url="https://api.stripe.com/charges",
+                method="POST",
+                headers={"Authorization": "Bearer sk_live_..."},
+                body='{"amount": 1000}',
+                webhooks=[{"url": "https://your-app.com/webhook"}]
+            )
+            ```
+
+        Note:
+            The fallback is ONLY called when EZThrottle itself is unreachable
+            (connection errors, timeouts). It is NOT called for rate limiting
+            or other EZThrottle errors - those indicate EZThrottle is working
+            and you should handle them appropriately.
+        """
+        try:
+            return self.submit_job(
+                url=url,
+                method=method,
+                headers=headers,
+                body=body,
+                **kwargs
+            )
+        except (requests.ConnectionError, requests.Timeout) as e:
+            # EZThrottle is unreachable - use fallback
+            return fallback()
+
 
 def auto_forward(client: EZThrottle) -> Callable:
     """
